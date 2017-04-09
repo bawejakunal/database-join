@@ -1,0 +1,5 @@
+#Ignore object files
+*.o
+
+#except
+!q4112_gen.o

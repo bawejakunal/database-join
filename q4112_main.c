@@ -108,7 +108,7 @@ int main(int argc, char* argv[]) {
         uint64_t run_res = q4112_run(inner_keys, inner_vals, inner_tuples,
               outer_join_keys, outer_aggr_keys, outer_vals, outer_tuples, i);
         run_ns = real_time() - run_ns;
-        fprintf(stderr, "Threads used: %d\n", i);
+        fprintf(stderr, "\n\nThreads used: %d\n", i);
         fprintf(stderr, "Repeat: %d\n", repeat);
         fprintf(stderr, "Query executed!\n");
         fprintf(stderr, "Execution time:  %12s ns\n", add_commas(run_ns));

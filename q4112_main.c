@@ -44,6 +44,7 @@ int main(int argc, char* argv[]) {
   size_t hh_groups         = argc > 8 ? atoll(argv[8]) : 0;
   double hh_probability    = argc > 9 ?  atof(argv[9]) : 0.0;
   int threads             = argc > 10 ? atoi(argv[10]) : 1;
+
   // check validadity of arguments
   assert(inner_selectivity > 0.1 && inner_selectivity <= 1);
   assert(outer_selectivity > 0.1 && outer_selectivity <= 1);

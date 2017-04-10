@@ -44,6 +44,8 @@ int main(int argc, char* argv[]) {
   size_t hh_groups         = argc > 8 ? atoll(argv[8]) : 0;
   double hh_probability    = argc > 9 ?  atof(argv[9]) : 0.0;
   int threads             = argc > 10 ? atoi(argv[10]) : 1;
+  //append readings to csv file
+  char* res_file            = argc > 11 ? argv[11] : "q4112_hj.csv";
 
   // check validadity of arguments
   assert(inner_selectivity > 0.1 && inner_selectivity <= 1);
@@ -95,22 +97,33 @@ int main(int argc, char* argv[]) {
   fprintf(stderr, "Generation time: %12s ns\n", add_commas(gen_ns));
   fprintf(stderr, "Query result: %llu\n", (unsigned long long) gen_res);
   
-  //run for thread configurations
-  int i;
+  //run configuration for multiple threads
+  FILE *fp = fopen(res_file, "a");
+  assert(fp != NULL);
+  int i, repeat;
   for(i = 1; i <= threads; i *= 2){
-    // run join using specified number of threads
-    uint64_t run_ns = real_time();
-    uint64_t run_res = q4112_run(inner_keys, inner_vals, inner_tuples,
-          outer_join_keys, outer_aggr_keys, outer_vals, outer_tuples, i);
-    run_ns = real_time() - run_ns;
-    fprintf(stderr, "Threads used: %d\n", i);
-    fprintf(stderr, "Query executed!\n");
-    fprintf(stderr, "Execution time:  %12s ns\n", add_commas(run_ns));
-    fprintf(stderr, "Query result: %llu\n", (unsigned long long) run_res);
-    // validate result and cleanup memory
-    assert(gen_res == run_res);
+    for (repeat = 1; repeat <= 5; repeat++){
+        // run join using specified number of threads
+        uint64_t run_ns = real_time();
+        uint64_t run_res = q4112_run(inner_keys, inner_vals, inner_tuples,
+              outer_join_keys, outer_aggr_keys, outer_vals, outer_tuples, i);
+        run_ns = real_time() - run_ns;
+        fprintf(stderr, "Threads used: %d\n", i);
+        fprintf(stderr, "Repeat: %d\n", repeat);
+        fprintf(stderr, "Query executed!\n");
+        fprintf(stderr, "Execution time:  %12s ns\n", add_commas(run_ns));
+        fprintf(stderr, "Query result: %llu\n", (unsigned long long) run_res);
+        // validate result
+        assert(gen_res == run_res);
+        fprintf(fp, "%zu,%.1f,%u,%zu,%lf,%u,%zu,%zu,%lf,%d,%d,%lu\n",
+            inner_tuples, inner_selectivity, inner_val_max, outer_tuples,
+            outer_selectivity, outer_val_max, groups, hh_groups,
+            hh_probability, threads, repeat, run_ns);
+    }
   }
 
+  //cleanup memory
+  fclose(fp);
   free(inner_keys);
   free(inner_vals);
   free(outer_join_keys);

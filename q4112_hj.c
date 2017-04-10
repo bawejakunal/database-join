@@ -6,7 +6,7 @@
 #include <stdbool.h>
 
 //hashing factor
-#define HASH_FACTOR 0x9e3779b1
+static const uint64_t HASH_FACTOR = 0x9e3779b1;
 
 //hash bucket struct
 typedef struct {

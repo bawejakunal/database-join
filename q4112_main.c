@@ -115,10 +115,10 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "Query result: %llu\n", (unsigned long long) run_res);
         // validate result
         assert(gen_res == run_res);
-        fprintf(fp, "%zu,%.1f,%u,%zu,%lf,%u,%zu,%zu,%lf,%d,%d,%lu\n",
+        fprintf(fp, "%zu,%.1f,%u,%zu,%.1lf,%u,%zu,%zu,%.1lf,%d,%d,%lu\n",
             inner_tuples, inner_selectivity, inner_val_max, outer_tuples,
             outer_selectivity, outer_val_max, groups, hh_groups,
-            hh_probability, threads, repeat, run_ns);
+            hh_probability, th, repeat, run_ns);
     }
   }
 

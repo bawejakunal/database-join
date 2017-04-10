@@ -74,7 +74,7 @@ int main(int argc, char* argv[]) {
   uint32_t* outer_vals = (uint32_t*) malloc(outer_tuples * 4);
   assert(outer_vals != NULL);
   // print max number of threads
-  fprintf(stderr, "Threads: %d / %d\n", threads, max_threads);
+  fprintf(stderr, "Threads Demand: %d / %d\n", threads, max_threads);
   fprintf(stderr, "Inner tuples: %13s\n", add_commas(inner_tuples));
   fprintf(stderr, "Outer tuples: %13s\n", add_commas(outer_tuples));
   fprintf(stderr, "Inner selectivity: %5.1f%%\n", inner_selectivity * 100);
@@ -94,16 +94,23 @@ int main(int argc, char* argv[]) {
   fprintf(stderr, "Query input generated!\n");
   fprintf(stderr, "Generation time: %12s ns\n", add_commas(gen_ns));
   fprintf(stderr, "Query result: %llu\n", (unsigned long long) gen_res);
-  // run join using specified number of threads
-  uint64_t run_ns = real_time();
-  uint64_t run_res = q4112_run(inner_keys, inner_vals, inner_tuples,
-      outer_join_keys, outer_aggr_keys, outer_vals, outer_tuples, threads);
-  run_ns = real_time() - run_ns;
-  fprintf(stderr, "Query executed!\n");
-  fprintf(stderr, "Execution time:  %12s ns\n", add_commas(run_ns));
-  fprintf(stderr, "Query result: %llu\n", (unsigned long long) run_res);
-  // validate result and cleanup memory
-  assert(gen_res == run_res);
+  
+  //run for thread configurations
+  int i;
+  for(i = 1; i <= threads; i *= 2){
+    // run join using specified number of threads
+    uint64_t run_ns = real_time();
+    uint64_t run_res = q4112_run(inner_keys, inner_vals, inner_tuples,
+          outer_join_keys, outer_aggr_keys, outer_vals, outer_tuples, i);
+    run_ns = real_time() - run_ns;
+    fprintf(stderr, "Threads used: %d\n", i);
+    fprintf(stderr, "Query executed!\n");
+    fprintf(stderr, "Execution time:  %12s ns\n", add_commas(run_ns));
+    fprintf(stderr, "Query result: %llu\n", (unsigned long long) run_res);
+    // validate result and cleanup memory
+    assert(gen_res == run_res);
+  }
+
   free(inner_keys);
   free(inner_vals);
   free(outer_join_keys);

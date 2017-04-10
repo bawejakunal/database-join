@@ -140,6 +140,8 @@ uint64_t q4112_run(
     //number of hash buckets
     int8_t log_buckets = 1;
     size_t buckets = 2;
+    //create thread barrier
+    pthread_barrier_t barrier;
 
     // check number of threads
     int t, max_threads = sysconf(_SC_NPROCESSORS_ONLN);
@@ -160,9 +162,6 @@ uint64_t q4112_run(
     }
     bucket_t* table = (bucket_t*) calloc(buckets, sizeof(bucket_t));
     assert(table != NULL);
-
-    //create thread barrier
-    pthread_barrier_t barrier;
 
     //initialize thread barrier
     pthread_barrier_init(&barrier, NULL, threads);
@@ -192,6 +191,11 @@ uint64_t q4112_run(
         sum += info[t].sum;
         count += info[t].count;
     }
+
+    //destroy barrier after threads join
+    pthread_barrier_destroy(&barrier);
+
+    //release memory
     free(info);
     free(table);
     return sum / count;

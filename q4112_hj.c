@@ -14,6 +14,14 @@ typedef struct {
   uint32_t val;
 } bucket_t;
 
+//result struct, contains sum and count
+//of order values and number of orders
+//respectively
+typedef struct {
+    uint64_t sum;
+    uint32_t count;
+} result_t;
+
 //thread info struct
 typedef struct {
     pthread_t id;
@@ -73,14 +81,51 @@ int inner_hash_table(bucket_t* table,
   return (end - begin);
 }
 
+result_t partial_result(const bucket_t *table,
+    const int8_t log_buckets,
+    const size_t buckets,
+    const size_t outer_beg,
+    const size_t outer_end,
+    const uint32_t* outer_keys,
+    const uint32_t* outer_vals){
+
+    size_t o, h;
+    result_t result = {0, 0};
+
+    // probe outer table using hash table
+    for (o = outer_beg; o < outer_end; ++o) {
+        uint32_t key = outer_keys[o];
+        // multiplicative hashing
+        h = (uint32_t) (key * HASH_FACTOR);
+        h >>= 32 - log_buckets;
+        // search for matching bucket
+        uint32_t tab = table[h].key;
+        while (tab != 0) {
+            // keys match
+            if (tab == key) {
+                // update single aggregate
+                result.sum += table[h].val * (uint64_t) outer_vals[o];
+                result.count += 1;
+                // guaranteed single match (join on primary key)
+                break;
+            }
+            // go to next bucket (linear probing)
+            h = (h + 1) & (buckets - 1);
+            tab = table[h].key;
+        }
+    }
+
+    //return partial result
+    return result;
+}
+
 //run each thread
 void* q4112_run_thread(void* arg) {
     q4112_run_info_t* info = (q4112_run_info_t*) arg;
     assert(pthread_equal(pthread_self(), info->id));
 
-    // initialize aggregate
-    uint64_t sum = 0;
-    uint32_t count = 0;
+    // initialize ggregate
+    result_t result = {0, 0};
 
     // copy info
     size_t thread  = info->thread;
@@ -90,6 +135,7 @@ void* q4112_run_thread(void* arg) {
     int8_t log_buckets = info->log_buckets;
     size_t buckets = info->buckets;
     bucket_t* table = info->table;
+    pthread_barrier_t *barrier = info->barrier;
 
     const uint32_t* inner_keys = info->inner_keys;
     const uint32_t* inner_vals = info->inner_vals;
@@ -115,15 +161,17 @@ void* q4112_run_thread(void* arg) {
         inner_vals, log_buckets, buckets);
 
     //synchronize participating threads
-    int ret = pthread_barrier_wait(info->barrier);
-
+    int ret = pthread_barrier_wait(barrier);
     //assert thread woke up with correct return code
     assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
 
     //read and calculate results
+    result = partial_result(table, log_buckets, buckets,
+        outer_beg, outer_end, outer_keys, outer_vals);
 
-    info->sum = sum;
-    info->count = count;
+    //extract query result in thread info
+    info->sum = result.sum;
+    info->count = result.count;
     pthread_exit(NULL);
 }
 
@@ -137,15 +185,21 @@ uint64_t q4112_run(
     size_t outer_tuples,
     int threads) {
 
+    int ret;
+    //declare thread barrier
+    pthread_barrier_t *barrier;
+
     //number of hash buckets
     int8_t log_buckets = 1;
     size_t buckets = 2;
-    //create thread barrier
-    pthread_barrier_t barrier;
 
     // check number of threads
     int t, max_threads = sysconf(_SC_NPROCESSORS_ONLN);
     assert(max_threads > 0 && threads > 0 && threads <= max_threads);
+
+    //malloc for thread barrier
+    barrier = (pthread_barrier_t*)malloc(sizeof(pthread_barrier_t));
+    assert(barrier != NULL);
 
     //malloc for thread info
     q4112_run_info_t* info = (q4112_run_info_t*)
@@ -160,11 +214,14 @@ uint64_t q4112_run(
         log_buckets += 1;
         buckets += buckets;
     }
+
+    //allocate 0 initialized memory for hash buckets
     bucket_t* table = (bucket_t*) calloc(buckets, sizeof(bucket_t));
     assert(table != NULL);
 
     //initialize thread barrier
-    pthread_barrier_init(&barrier, NULL, threads);
+    ret = pthread_barrier_init(barrier, NULL, threads);
+    assert(ret == 0);
 
     //create and run threads
     for (t = 0; t != threads; ++t) {
@@ -179,7 +236,7 @@ uint64_t q4112_run(
         info[t].table = table;
         info[t].buckets = buckets;
         info[t].log_buckets = log_buckets;
-        info[t].barrier = &barrier;
+        info[t].barrier = barrier;
         pthread_create(&info[t].id, NULL, q4112_run_thread, &info[t]);
     }
 
@@ -193,7 +250,8 @@ uint64_t q4112_run(
     }
 
     //destroy barrier after threads join
-    pthread_barrier_destroy(&barrier);
+    ret = pthread_barrier_destroy(barrier);
+    assert(ret == 0);
 
     //release memory
     free(info);

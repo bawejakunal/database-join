@@ -86,11 +86,12 @@ int inner_hash_table(bucket_t* table,
   return (end - begin);
 }
 
-// call on a portion of outer table
-// and join on primary key with the
-// hash table of inner relation
-// returns partial result
-// each thread calls this method
+// Called on a portion of outer table
+// Compares primary key of outer relation record
+// with records inserted in hash table based on
+// the multiplicative hash computed
+// Returns partial result as result_t
+// each query thread calls this method
 result_t partial_result(const bucket_t *table,
     const int8_t log_buckets,
     const size_t buckets,
@@ -100,6 +101,7 @@ result_t partial_result(const bucket_t *table,
     const uint32_t* outer_vals) {
 
     size_t o, h;
+    // initialize partial result
     result_t result = {0, 0};
 
     //  probe outer table using hash table

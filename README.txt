@@ -40,6 +40,16 @@ Observations:
         query and thus halving or doubling the inner selectively makes little
         difference in run time.
 
+    4. An additional observance is that in case of 100 records of inner 
+        relation (1-4), the number of cache misses is negligible but in (5-8)
+        due to the large number of records, most of the read operations for
+        the join result in cache miss which causes additional latency in
+        overall query.
+
+        Eg: Comparison of configuration 1 with configuration 8 for same number
+        of threads and outer relation records (lines 26 and 177 in attached
+        CSV)
+
 Approach/Algorithm:
     1. The inner table in the join query is built into an in-memory hash
         table, with linear probing (better cache locality). It uses a 

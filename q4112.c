@@ -161,10 +161,8 @@ size_t estimate(const uint32_t* keys, size_t size) {
         bitmaps[p] |= h & -h;  // update bitmap of partition
     }
 
-    for (i = 0; i != partitions; ++i){
+    for (i = 0; i != partitions; ++i)
         sum += ((size_t) 1) << count_trailing_zeros(~bitmaps[i]);
-        printf("%lu\t%lu\n", i, sum);
-    }
 
     free(bitmaps);
     return sum / 0.77351;

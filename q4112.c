@@ -39,6 +39,7 @@ typedef struct {
     const uint32_t* inner_keys;
     const uint32_t* inner_vals;
     const uint32_t* outer_keys;
+    const uint32_t* outer_aggr_keys;
     const uint32_t* outer_vals;
     uint64_t sum;
     uint32_t count;
@@ -147,6 +148,28 @@ result_t partial_result(const bucket_t *table,
     return result;
 }
 
+// estimate the number of unique group by keys from outer table
+size_t estimate(const uint32_t* keys, size_t size) {
+    const int8_t log_partitions = 12; //4096 partitions
+    size_t h, i, sum = 0, partitions = 1 << log_partitions;
+    uint32_t* bitmaps = (uint32_t *)calloc(partitions, 4);
+
+    for (i = 0; i < size; ++i) {
+        h = keys[i] * HASH_FACTOR;
+        size_t p = h & (partitions - 1);  // use some hash bits to partition
+        h >>= log_partitions;  // use remaining hash bits for the bitmap
+        bitmaps[p] |= h & -h;  // update bitmap of partition
+    }
+
+    for (i = 0; i != partitions; ++i){
+        sum += ((size_t) 1) << count_trailing_zeros(~bitmaps[i]);
+        printf("%lu\t%lu\n", i, sum);
+    }
+
+    free(bitmaps);
+    return sum / 0.77351;
+}
+
 // run each thread
 void* q4112_run_thread(void* arg) {
     q4112_run_info_t* info = (q4112_run_info_t*) arg;
@@ -169,6 +192,7 @@ void* q4112_run_thread(void* arg) {
     const uint32_t* inner_vals = info->inner_vals;
     const uint32_t* outer_keys = info->outer_keys;
     const uint32_t* outer_vals = info->outer_vals;
+    const uint32_t* outer_aggr_keys = info->outer_aggr_keys;
 
     //  thread boundaries for outer table
     size_t outer_beg = (outer_tuples / threads) * (thread + 0);
@@ -185,45 +209,22 @@ void* q4112_run_thread(void* arg) {
     }
 
     // insert to hash table
-    inner_hash_table(table, inner_beg, inner_end, inner_keys,
-        inner_vals, log_buckets, buckets);
+    // inner_hash_table(table, inner_beg, inner_end, inner_keys,
+    //     inner_vals, log_buckets, buckets);
 
     // synchronize participating threads
-    int ret = pthread_barrier_wait(barrier);
+    // int ret = pthread_barrier_wait(barrier);
     // assert thread woke up with correct return code
-    assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
+    // assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
 
     // read and calculate results
-    result = partial_result(table, log_buckets, buckets,
-        outer_beg, outer_end, outer_keys, outer_vals);
+    // result = partial_result(table, log_buckets, buckets,
+    //     outer_beg, outer_end, outer_keys, outer_vals);
 
     // extract query result in thread info
     info->sum = result.sum;
     info->count = result.count;
     pthread_exit(NULL);
-}
-
-// estimate the number of unique group by keys from outer table
-size_t estimate(const uint32_t* keys, size_t size) {
-  const int8_t log_partitions = 12; //4096 partitions
-  size_t i, partitions = 1 << log_partitions;
-  uint32_t* bitmaps = (uint32_t *)calloc(partitions, 4);
-
-  for (i = 0; i != size; ++i) {
-    // uint32_t h = hash(keys[i]);
-    uint32_t h = keys[i] * 0x9e3779b1;
-    size_t p = h & (partitions - 1);  // use some hash bits to partition
-    h >>= log_partitions;  // use remaining hash bits for the bitmap
-    bitmaps[p] |= h & -h;  // update bitmap of partition
-  }
-
-  size_t sum = 0;
-
-  for (i = 0; i != partitions; ++i)
-    sum += ((size_t) 1) << count_trailing_zeros(~bitmaps[i]);
-
-  free(bitmaps);
-  return sum / 0.77351;
 }
 
 uint64_t q4112_run(
@@ -274,8 +275,8 @@ uint64_t q4112_run(
     ret = pthread_barrier_init(barrier, NULL, threads);
     assert(ret == 0);
 
-    printf("outer_tuples: %lu\n", outer_tuples);
-    printf("estimate: %lu\n", estimate(outer_aggr_keys, outer_tuples));
+    printf("%lu\n", estimate(outer_aggr_keys, outer_tuples));
+
     // create and run threads
     for (t = 0; t != threads; ++t) {
         info[t].thread = t;
@@ -283,6 +284,7 @@ uint64_t q4112_run(
         info[t].inner_keys = inner_keys;
         info[t].inner_vals = inner_vals;
         info[t].outer_keys = outer_join_keys;
+        info[t].outer_aggr_keys = outer_aggr_keys;
         info[t].outer_vals = outer_vals;
         info[t].inner_tuples = inner_tuples;
         info[t].outer_tuples = outer_tuples;

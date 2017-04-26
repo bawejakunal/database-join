@@ -45,7 +45,7 @@ int main(int argc, char* argv[]) {
   double hh_probability    = argc > 9 ?  atof(argv[9]) : 0.0;
   int threads             = argc > 10 ? atoi(argv[10]) : 1;
   //append readings to csv file
-  char* res_file            = argc > 11 ? argv[11] : "q4112_hj.csv";
+  char* res_file            = argc > 11 ? argv[11] : "q4112.csv";
 
   // check validadity of arguments
   assert(inner_selectivity > 0.1 && inner_selectivity <= 1);

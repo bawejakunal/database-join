@@ -267,13 +267,17 @@ void* q4112_run_thread(void* arg) {
         printf("%u\n", estimate);
     }
 
-    // synchronize participating threads for collecting estimates
+    // synchronize participating threads for aggergate table allocation
     ret = pthread_barrier_wait(barrier);
     assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
 
     // insert to hash table
-    // inner_hash_table(table, inner_beg, inner_end, inner_keys,
-    //     inner_vals, log_buckets, buckets);
+    inner_hash_table(table, inner_beg, inner_end, inner_keys,
+        inner_vals, log_buckets, buckets);
+
+    // synchronize threads before aggregation
+    ret = pthread_barrier_wait(barrier);
+    assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
 
     // read and calculate results
     // result = partial_result(table, log_buckets, buckets,
@@ -331,7 +335,7 @@ uint64_t q4112_run(
     //  the hash table fill rate will be between 1/3 and 2/3
     while (buckets * 0.67 < inner_tuples) {
         log_buckets += 1;
-        buckets += buckets;
+        buckets <<= 1;  // double buckets
     }
 
     // allocate 0 initialized memory for hash buckets
@@ -370,16 +374,9 @@ uint64_t q4112_run(
         pthread_join(info[t].id, NULL);
     }
 
-    // // estimate of aggergate keys
-    // sum = 0;
-    // for (t = 0; t < (1<<12); ++t)
-    //     sum += ((size_t) 1) << count_trailing_zeros(~bitmaps[t]);
-    // sum /= PHI;
-
     // destroy barrier after threads join
     ret = pthread_barrier_destroy(barrier);
     assert(ret == 0);
-
 
     // release memory
     for (ret = 0; ret < threads; ret++)

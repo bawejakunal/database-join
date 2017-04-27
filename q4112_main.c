@@ -54,7 +54,9 @@ int main(int argc, char* argv[]) {
   assert(outer_tuples > 0);
   assert(outer_tuples * outer_selectivity >=
          inner_tuples * inner_selectivity);
-  assert(groups <= outer_tuples);
+
+  // 0 groups will cause segfault for part 2 so additional check
+  assert(groups > 0 && groups <= outer_tuples);
   assert(hh_groups <= groups);
   assert(hh_probability >= 0);
   assert(hh_probability <= 1);
@@ -101,7 +103,7 @@ int main(int argc, char* argv[]) {
   FILE *fp = fopen(res_file, "a");
   assert(fp != NULL);
   int th, repeat;
-  for(th = 1; th <= threads; th = th * 2){
+  for(th = 1; th <= threads; th <<= 1){
     for (repeat = 1; repeat <= 5; repeat++){
         // run join using specified number of threads
         uint64_t run_ns = real_time();

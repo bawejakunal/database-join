@@ -15,6 +15,7 @@
 
 // Knuth factor
 static const uint64_t HASH_FACTOR = 0x9e3779b1;
+static const float  PHI = 0.77351;
 
 // hash bucket struct
 typedef struct {
@@ -24,10 +25,10 @@ typedef struct {
 
 // result struct, contains sum of order values
 // and number of orders respectively
-typedef struct {
-    uint64_t sum;
-    uint32_t count;
-} result_t;
+// typedef struct {
+//     uint64_t sum;
+//     uint32_t count;
+// } result_t;
 
 // thread info struct
 typedef struct {
@@ -41,19 +42,32 @@ typedef struct {
     const uint32_t* outer_keys;
     const uint32_t* outer_aggr_keys;
     const uint32_t* outer_vals;
-    uint64_t sum;
-    uint32_t count;
+
     // pass bucket info to threads
     int8_t log_buckets;
     size_t buckets;
     bucket_t* table;
     // thread barrier
     pthread_barrier_t *barrier;
+    // Flajolet-Martin estimation values
+    uint32_t *estimates;
 } q4112_run_info_t;
 
+// global aggregate table struct
+typedef struct
+{
+    uint32_t key;   // aggregate key
+    uint64_t sum;   // aggregate sum
+    uint32_t count; // aggregate count
+} aggr_t;
 
+// pointer to global aggregate table
+// shared across threads
+aggr_t *aggregate_table;
+
+
+// count trailing zeroes in binary representation
 uint32_t count_trailing_zeros(uint32_t value){
-    // count trailing zeroes in binary representation
     uint32_t count = 32;
     value &= -value;
     if (value) count--;
@@ -64,6 +78,32 @@ uint32_t count_trailing_zeros(uint32_t value){
     if (value & 0x55555555) count -= 1;
     return count;
 }
+
+// estimate the number of unique group by keys from outer table
+void _estimate(uint32_t *estimate, const int8_t log_partitions, 
+    const uint32_t* keys, size_t size) {
+    uint32_t bitmap = 0;
+    size_t i;
+    uint32_t h;
+    // size_t h, i, partitions = 1 << log_partitions;
+    // uint32_t* bitmaps = (uint32_t *)calloc(partitions, sizeof(uint32_t));
+
+    for (i = 0; i < size; i++) {
+        h = keys[i] * HASH_FACTOR;  // multiplicative hash
+        bitmap |= h & -h;
+        // size_t p = h & (partitions - 1);  // use some hash bits to partition
+        // h >>= log_partitions;  // use remaining hash bits for the bitmap
+        // bitmaps[p] |= h & -h;  // update bitmap of partition
+    }
+
+    // free thread local bitmaps
+    // free(bitmaps);
+
+    // write to estimate location
+    *estimate = (1 << count_trailing_zeros(~bitmap)) / PHI;
+    return;
+}
+
 
 // fills given hash table
 int inner_hash_table(bucket_t* table,
@@ -108,65 +148,45 @@ int inner_hash_table(bucket_t* table,
 // the multiplicative hash computed
 // Returns partial result as result_t
 // each query thread calls this method
-result_t partial_result(const bucket_t *table,
-    const int8_t log_buckets,
-    const size_t buckets,
-    const size_t outer_beg,
-    const size_t outer_end,
-    const uint32_t* outer_keys,
-    const uint32_t* outer_vals) {
+// result_t partial_result(const bucket_t *table,
+//     const int8_t log_buckets,
+//     const size_t buckets,
+//     const size_t outer_beg,
+//     const size_t outer_end,
+//     const uint32_t* outer_keys,
+//     const uint32_t* outer_vals) {
 
-    size_t o, h;
-    // initialize partial result
-    result_t result = {0, 0};
+//     size_t o, h;
+//     // initialize partial result
+//     result_t result = {0, 0};
 
-    //  probe outer table using hash table
-    //  outer_beg to outer_end - 1
-    for (o = outer_beg; o < outer_end; ++o) {
-        uint32_t key = outer_keys[o];
-        //  multiplicative hashing
-        h = (uint32_t) (key * HASH_FACTOR);
-        h >>= 32 - log_buckets;
-        //  search for matching bucket
-        uint32_t tab = table[h].key;
-        while (tab != 0) {
-            //  keys match
-            if (tab == key) {
-                //  update partial result aggregate
-                result.sum += table[h].val * (uint64_t) outer_vals[o];
-                result.count += 1;
-                //  guaranteed single match (join on primary key)
-                break;
-            }
-            //  go to next bucket (linear probing)
-            h = (h + 1) & (buckets - 1);
-            tab = table[h].key;
-        }
-    }
+//     //  probe outer table using hash table
+//     //  outer_beg to outer_end - 1
+//     for (o = outer_beg; o < outer_end; ++o) {
+//         uint32_t key = outer_keys[o];
+//         //  multiplicative hashing
+//         h = (uint32_t) (key * HASH_FACTOR);
+//         h >>= 32 - log_buckets;
+//         //  search for matching bucket
+//         uint32_t tab = table[h].key;
+//         while (tab != 0) {
+//             //  keys match
+//             if (tab == key) {
+//                 //  update partial result aggregate
+//                 result.sum += table[h].val * (uint64_t) outer_vals[o];
+//                 result.count += 1;
+//                 //  guaranteed single match (join on primary key)
+//                 break;
+//             }
+//             //  go to next bucket (linear probing)
+//             h = (h + 1) & (buckets - 1);
+//             tab = table[h].key;
+//         }
+//     }
 
-    // return partial result
-    return result;
-}
-
-// estimate the number of unique group by keys from outer table
-size_t estimate(const uint32_t* keys, size_t size) {
-    const int8_t log_partitions = 12; //4096 partitions
-    size_t h, i, sum = 0, partitions = 1 << log_partitions;
-    uint32_t* bitmaps = (uint32_t *)calloc(partitions, 4);
-
-    for (i = 0; i < size; ++i) {
-        h = keys[i] * HASH_FACTOR;
-        size_t p = h & (partitions - 1);  // use some hash bits to partition
-        h >>= log_partitions;  // use remaining hash bits for the bitmap
-        bitmaps[p] |= h & -h;  // update bitmap of partition
-    }
-
-    for (i = 0; i != partitions; ++i)
-        sum += ((size_t) 1) << count_trailing_zeros(~bitmaps[i]);
-
-    free(bitmaps);
-    return sum / 0.77351;
-}
+//     // return partial result
+//     return result;
+// }
 
 // run each thread
 void* q4112_run_thread(void* arg) {
@@ -174,7 +194,11 @@ void* q4112_run_thread(void* arg) {
     assert(pthread_equal(pthread_self(), info->id));
 
     //  initialize ggregate
-    result_t result = {0, 0};
+    // result_t result = {0, 0};
+
+    // iterator
+    int8_t i;
+    int ret;
 
     //  copy info
     size_t thread  = info->thread;
@@ -192,6 +216,9 @@ void* q4112_run_thread(void* arg) {
     const uint32_t* outer_vals = info->outer_vals;
     const uint32_t* outer_aggr_keys = info->outer_aggr_keys;
 
+    // estimates array
+    uint32_t *estimates = info->estimates;
+
     //  thread boundaries for outer table
     size_t outer_beg = (outer_tuples / threads) * (thread + 0);
     size_t outer_end = (outer_tuples / threads) * (thread + 1);
@@ -206,22 +233,37 @@ void* q4112_run_thread(void* arg) {
         inner_end = inner_tuples;
     }
 
+    // get estimate for thread's partition
+    // number of log_partitions = number of threads
+    _estimate(&estimates[thread], (int8_t)threads, 
+        (outer_aggr_keys + outer_beg), (outer_end - outer_beg));
+
+    // synchronize participating threads for collecting estimates
+    ret = pthread_barrier_wait(barrier);
+    assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
+
+    if (ret == PTHREAD_BARRIER_SERIAL_THREAD){
+        uint32_t final_estimate = 0;
+        for (i = 0; i < threads; i++)
+            final_estimate += estimates[i];
+        printf("final: %u\n", final_estimate);
+    }
+
+    // synchronize participating threads for collecting estimates
+    ret = pthread_barrier_wait(barrier);
+    assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
+
     // insert to hash table
     // inner_hash_table(table, inner_beg, inner_end, inner_keys,
     //     inner_vals, log_buckets, buckets);
-
-    // synchronize participating threads
-    // int ret = pthread_barrier_wait(barrier);
-    // assert thread woke up with correct return code
-    // assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
 
     // read and calculate results
     // result = partial_result(table, log_buckets, buckets,
     //     outer_beg, outer_end, outer_keys, outer_vals);
 
     // extract query result in thread info
-    info->sum = result.sum;
-    info->count = result.count;
+    // info->sum = result.sum;
+    // info->count = result.count;
     pthread_exit(NULL);
 }
 
@@ -235,11 +277,9 @@ uint64_t q4112_run(
     size_t outer_tuples,
     int threads) {
 
-    int ret;
-    // declare thread barrier
-    pthread_barrier_t *barrier;
+    int8_t ret;
 
-    // number of hash buckets
+    // number of buckets for hash table
     int8_t log_buckets = 1;
     size_t buckets = 2;
 
@@ -248,15 +288,19 @@ uint64_t q4112_run(
     assert(max_threads > 0 && threads > 0 && threads <= max_threads);
 
     // malloc for thread barrier
-    barrier = (pthread_barrier_t*)malloc(sizeof(pthread_barrier_t));
+    pthread_barrier_t *barrier = \
+        (pthread_barrier_t*)malloc(sizeof(pthread_barrier_t));
     assert(barrier != NULL);
 
     // malloc for thread info for all threads
     q4112_run_info_t* info = (q4112_run_info_t*)
         malloc(threads * sizeof(q4112_run_info_t));
-
     // assert malloc succeeded
     assert(info != NULL);
+
+    // merge them in thread after first barrier
+    uint32_t *estimates = (uint32_t*)malloc(threads * sizeof(uint32_t));
+    assert(estimates != NULL);
 
     //  set the number of hash table buckets to be 2^k
     //  the hash table fill rate will be between 1/3 and 2/3
@@ -273,10 +317,8 @@ uint64_t q4112_run(
     ret = pthread_barrier_init(barrier, NULL, threads);
     assert(ret == 0);
 
-    printf("%lu\n", estimate(outer_aggr_keys, outer_tuples));
-
     // create and run threads
-    for (t = 0; t != threads; ++t) {
+    for (t = 0; t < threads; ++t) {
         info[t].thread = t;
         info[t].threads = threads;
         info[t].inner_keys = inner_keys;
@@ -290,6 +332,8 @@ uint64_t q4112_run(
         info[t].buckets = buckets;
         info[t].log_buckets = log_buckets;
         info[t].barrier = barrier;
+        //Flajolet-Martin estimates
+        info[t].estimates = estimates;
         pthread_create(&info[t].id, NULL, q4112_run_thread, &info[t]);
     }
 
@@ -298,15 +342,20 @@ uint64_t q4112_run(
     uint32_t count = 0;
     for (t = 0; t != threads; ++t) {
         pthread_join(info[t].id, NULL);
-        sum += info[t].sum;
-        count += info[t].count;
     }
+
+    // // estimate of aggergate keys
+    // sum = 0;
+    // for (t = 0; t < (1<<12); ++t)
+    //     sum += ((size_t) 1) << count_trailing_zeros(~bitmaps[t]);
+    // sum /= PHI;
 
     // destroy barrier after threads join
     ret = pthread_barrier_destroy(barrier);
     assert(ret == 0);
 
     // release memory
+    free(estimates);
     free(info);
     free(table);
 

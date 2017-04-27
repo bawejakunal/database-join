@@ -50,7 +50,8 @@ typedef struct {
     // thread barrier
     pthread_barrier_t *barrier;
     // Flajolet-Martin estimation values
-    uint32_t *estimates;
+    uint32_t **bitmaps;
+    int8_t log_partitions;
 } q4112_run_info_t;
 
 // global aggregate table struct
@@ -80,21 +81,16 @@ uint32_t count_trailing_zeros(uint32_t value){
 }
 
 // estimate the number of unique group by keys from outer table
-void _estimate(uint32_t *estimate, const int8_t log_partitions, 
+void _estimate(uint32_t *bitmaps, const int8_t log_partitions, 
     const uint32_t* keys, size_t size) {
-    uint32_t bitmap = 0;
-    size_t i;
-    uint32_t h;
-    // size_t partitions = 1 << log_partitions;
-    // uint32_t* bitmaps = (uint32_t *)calloc(partitions, sizeof(uint32_t));
-    // assert(bitmaps != NULL);
+    size_t h, i, p;
+    size_t partitions = 1 << log_partitions;
 
     for (i = 0; i < size; i++) {
         h = keys[i] * HASH_FACTOR;  // multiplicative hash
-        bitmap |= h & -h;
-        // p = h & (partitions - 1);  // use some hash bits to partition
-        // h >>= log_partitions;  // use remaining hash bits for the bitmap
-        // bitmaps[p] |= h & -h;  // update bitmap of partition
+        p = h & (partitions - 1);  // use some hash bits to partition
+        h >>= log_partitions;  // use remaining hash bits for the bitmap
+        bitmaps[p] |= h & -h;  // update bitmap of partition
     }
 
     // collect sum
@@ -104,7 +100,6 @@ void _estimate(uint32_t *estimate, const int8_t log_partitions,
     // free thread local bitmaps
     // free(bitmaps);
     // write to estimate location
-    *estimate = bitmap;
     return;
 }
 
@@ -201,7 +196,7 @@ void* q4112_run_thread(void* arg) {
     // result_t result = {0, 0};
 
     // iterator
-    int8_t i;
+    uint32_t i, j;
     int ret;
 
     //  copy info
@@ -219,9 +214,11 @@ void* q4112_run_thread(void* arg) {
     const uint32_t* outer_keys = info->outer_keys;
     const uint32_t* outer_vals = info->outer_vals;
     const uint32_t* outer_aggr_keys = info->outer_aggr_keys;
+    const int8_t log_partitions = info->log_partitions;
+    const uint32_t partitions = 1 << log_partitions;
 
-    // estimates array
-    uint32_t *estimates = info->estimates;
+    // corresponding bitmaps for the thread
+    uint32_t **bitmaps = info->bitmaps;
 
     //  thread boundaries for outer table
     size_t outer_beg = (outer_tuples / threads) * (thread + 0);
@@ -239,7 +236,7 @@ void* q4112_run_thread(void* arg) {
 
     // get estimate for thread's partition
     // number of log_partitions = number of threads
-    _estimate(&estimates[thread], (int8_t)threads, 
+    _estimate(bitmaps[thread], log_partitions, 
         (outer_aggr_keys + outer_beg), (outer_end - outer_beg));
 
     // synchronize participating threads for collecting estimates
@@ -248,8 +245,18 @@ void* q4112_run_thread(void* arg) {
 
     if (ret == PTHREAD_BARRIER_SERIAL_THREAD){
         uint32_t final_estimate = 0;
-        for (i = 0; i < threads; i++)
-            final_estimate += (1 << count_trailing_zeros(~estimates[i]));
+        // merge other bitmaps into current thread's bitmaps
+        for (i = 0; i < threads; i++){
+            // already present current thread's bitmaps
+            if (i == thread)
+                continue;
+            for (j = 0; j < partitions; j++)
+                bitmaps[thread][j] |= bitmaps[i][j];
+        }
+
+        // calculate estimate
+        for (j = 0; j < partitions; j++)
+            final_estimate += (1 << count_trailing_zeros(~bitmaps[thread][j]));
         final_estimate  /= PHI;
         printf("final: %u\n", final_estimate);
         aggregate_table = (aggr_t*)calloc(final_estimate, sizeof(aggr_t));
@@ -285,6 +292,8 @@ uint64_t q4112_run(
     int threads) {
 
     int8_t ret;
+    int8_t log_partitions = 12;
+    uint32_t partitions = 1 << log_partitions;
 
     // number of buckets for hash table
     int8_t log_buckets = 1;
@@ -306,8 +315,13 @@ uint64_t q4112_run(
     assert(info != NULL);
 
     // merge them in thread after first barrier
-    uint32_t *estimates = (uint32_t*)malloc(threads * sizeof(uint32_t));
-    assert(estimates != NULL);
+    uint32_t **bitmaps = (uint32_t**)malloc(threads * sizeof(uint32_t*));
+    assert(bitmaps != NULL);
+
+    // create bitmap arrays
+    for (ret = 0; ret < threads; ret++){
+        bitmaps[ret] = (uint32_t*)calloc(partitions, sizeof(uint32_t));
+    }
 
     //  set the number of hash table buckets to be 2^k
     //  the hash table fill rate will be between 1/3 and 2/3
@@ -340,7 +354,8 @@ uint64_t q4112_run(
         info[t].log_buckets = log_buckets;
         info[t].barrier = barrier;
         //Flajolet-Martin estimates
-        info[t].estimates = estimates;
+        info[t].log_partitions = log_partitions;
+        info[t].bitmaps = bitmaps;  // array of bitmaps
         pthread_create(&info[t].id, NULL, q4112_run_thread, &info[t]);
     }
 
@@ -361,10 +376,12 @@ uint64_t q4112_run(
     ret = pthread_barrier_destroy(barrier);
     assert(ret == 0);
 
+
     // release memory
-    assert(aggregate_table != NULL);
+    for (ret = 0; ret < threads; ret++)
+        free(bitmaps[ret]);
+    free(bitmaps);
     free(aggregate_table);
-    free(estimates);
     free(info);
     free(table);
 

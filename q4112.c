@@ -85,6 +85,7 @@ void _estimate(uint32_t *bitmaps, const int8_t log_partitions,
     const uint32_t* keys, size_t size) {
     size_t h, i, p;
     size_t partitions = 1 << log_partitions;
+    bitmaps = (uint32_t*)calloc(partitions, sizeof(uint32_t));
 
     for (i = 0; i < size; i++) {
         h = keys[i] * HASH_FACTOR;  // multiplicative hash
@@ -200,12 +201,12 @@ void* q4112_run_thread(void* arg) {
     int ret;
 
     //  copy info
-    size_t thread  = info->thread;
-    size_t threads = info->threads;
-    size_t inner_tuples = info->inner_tuples;
-    size_t outer_tuples = info->outer_tuples;
-    int8_t log_buckets = info->log_buckets;
-    size_t buckets = info->buckets;
+    const size_t thread  = info->thread;
+    const size_t threads = info->threads;
+    const size_t inner_tuples = info->inner_tuples;
+    const size_t outer_tuples = info->outer_tuples;
+    const int8_t log_buckets = info->log_buckets;
+    const size_t buckets = info->buckets;
     bucket_t* table = info->table;
     pthread_barrier_t *barrier = info->barrier;
 
@@ -317,11 +318,6 @@ uint64_t q4112_run(
     // merge them in thread after first barrier
     uint32_t **bitmaps = (uint32_t**)malloc(threads * sizeof(uint32_t*));
     assert(bitmaps != NULL);
-
-    // create bitmap arrays
-    for (ret = 0; ret < threads; ret++){
-        bitmaps[ret] = (uint32_t*)calloc(partitions, sizeof(uint32_t));
-    }
 
     //  set the number of hash table buckets to be 2^k
     //  the hash table fill rate will be between 1/3 and 2/3

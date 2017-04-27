@@ -100,7 +100,7 @@ void _estimate(uint32_t *estimate, const int8_t log_partitions,
     // free(bitmaps);
 
     // write to estimate location
-    *estimate = (1 << count_trailing_zeros(~bitmap)) / PHI;
+    *estimate = (1 << count_trailing_zeros(~bitmap));
     return;
 }
 
@@ -246,7 +246,10 @@ void* q4112_run_thread(void* arg) {
         uint32_t final_estimate = 0;
         for (i = 0; i < threads; i++)
             final_estimate += estimates[i];
+        final_estimate  /= PHI;
         printf("final: %u\n", final_estimate);
+        aggregate_table = (aggr_t*)calloc(final_estimate, sizeof(aggr_t));
+        assert(aggregate_table != NULL);
     }
 
     // synchronize participating threads for collecting estimates
@@ -355,6 +358,8 @@ uint64_t q4112_run(
     assert(ret == 0);
 
     // release memory
+    assert(aggregate_table != NULL);
+    free(aggregate_table);
     free(estimates);
     free(info);
     free(table);

@@ -187,16 +187,34 @@ int inner_hash_table(bucket_t* table,
 //     return result;
 // }
 
+// allocate memory to aggregate table
+uint32_t alloc_aggr_table(const size_t threads, const size_t thread, 
+    const uint32_t partitions, uint32_t **bitmaps){
+    uint32_t i, j, estimate = 0;
+    // merge other bitmaps into current thread's bitmaps
+    for (i = 0; i < threads; i++){
+        // already present current thread's bitmaps
+        if (i == thread)
+            continue;
+        for (j = 0; j < partitions; j++)
+            bitmaps[thread][j] |= bitmaps[i][j];
+    }
+    // calculate estimate
+    for (j = 0; j < partitions; j++)
+        estimate += (1 << count_trailing_zeros(~bitmaps[thread][j]));
+    estimate  /= PHI;
+    printf("final: %u\n", estimate);
+    aggregate_table = (aggr_t*)calloc(estimate, sizeof(aggr_t));
+    assert(aggregate_table != NULL);
+    return estimate;
+}
+
 // run each thread
 void* q4112_run_thread(void* arg) {
     q4112_run_info_t* info = (q4112_run_info_t*) arg;
     assert(pthread_equal(pthread_self(), info->id));
 
-    //  initialize ggregate
-    // result_t result = {0, 0};
-
-    // iterator
-    uint32_t i, j;
+    uint32_t i, j, estimate;
     int ret;
 
     //  copy info
@@ -243,24 +261,9 @@ void* q4112_run_thread(void* arg) {
     ret = pthread_barrier_wait(barrier);
     assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
 
+    // last thread does this
     if (ret == PTHREAD_BARRIER_SERIAL_THREAD){
-        uint32_t final_estimate = 0;
-        // merge other bitmaps into current thread's bitmaps
-        for (i = 0; i < threads; i++){
-            // already present current thread's bitmaps
-            if (i == thread)
-                continue;
-            for (j = 0; j < partitions; j++)
-                bitmaps[thread][j] |= bitmaps[i][j];
-        }
-
-        // calculate estimate
-        for (j = 0; j < partitions; j++)
-            final_estimate += (1 << count_trailing_zeros(~bitmaps[thread][j]));
-        final_estimate  /= PHI;
-        printf("final: %u\n", final_estimate);
-        aggregate_table = (aggr_t*)calloc(final_estimate, sizeof(aggr_t));
-        assert(aggregate_table != NULL);
+        estimate = alloc_aggr_table(threads, thread, partitions, bitmaps);
     }
 
     // synchronize participating threads for collecting estimates
@@ -292,7 +295,7 @@ uint64_t q4112_run(
     int threads) {
 
     int8_t ret;
-    int8_t log_partitions = 12;
+    int8_t log_partitions = 12; // optimized for 16KB L1 cache
     uint32_t partitions = 1 << log_partitions;
 
     // number of buckets for hash table

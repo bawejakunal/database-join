@@ -189,7 +189,7 @@ int inner_hash_table(bucket_t* table,
 
 // allocate memory to aggregate table
 uint32_t alloc_aggr_table(const size_t threads, const size_t thread, 
-    const uint32_t partitions, const size_t outer_tuples, uint32_t **bitmaps){
+    const uint32_t partitions, uint32_t **bitmaps){
     uint32_t i, j, estimate = 0;
     // merge other bitmaps into current thread's bitmaps
     for (i = 0; i < threads; i++){
@@ -203,9 +203,7 @@ uint32_t alloc_aggr_table(const size_t threads, const size_t thread,
     for (j = 0; j < partitions; j++)
         estimate += (1 << count_trailing_zeros(~bitmaps[thread][j]));
     estimate  /= PHI;
-    // overestimate should not be greater than number of outer table records
-    estimate = estimate <= outer_tuples ? estimate : outer_tuples;
-    printf("final: %u\n", estimate);
+
     aggregate_table = (aggr_t*)calloc(estimate, sizeof(aggr_t));
     assert(aggregate_table != NULL);
     return estimate;
@@ -264,9 +262,10 @@ void* q4112_run_thread(void* arg) {
     assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
 
     // last thread does this
-    if (ret == PTHREAD_BARRIER_SERIAL_THREAD)
-        estimate = alloc_aggr_table(threads, thread, partitions, outer_tuples,
-                        bitmaps);
+    if (ret == PTHREAD_BARRIER_SERIAL_THREAD) {
+        estimate = alloc_aggr_table(threads, thread, partitions, bitmaps);
+        printf("%u\n", estimate);
+    }
 
     // synchronize participating threads for collecting estimates
     ret = pthread_barrier_wait(barrier);

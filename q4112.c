@@ -82,29 +82,29 @@ uint32_t count_trailing_zeros(uint32_t value){
 // estimate the number of unique group by keys from outer table
 void _estimate(uint32_t *estimate, const int8_t log_partitions, 
     const uint32_t* keys, size_t size) {
-    // uint32_t bitmap = 0;
-    size_t i, p;
-    uint32_t h, sum = 0;
-    size_t partitions = 1 << log_partitions;
-    uint32_t* bitmaps = (uint32_t *)calloc(partitions, sizeof(uint32_t));
-    assert(bitmaps != NULL);
+    uint32_t bitmap = 0;
+    size_t i;
+    uint32_t h;
+    // size_t partitions = 1 << log_partitions;
+    // uint32_t* bitmaps = (uint32_t *)calloc(partitions, sizeof(uint32_t));
+    // assert(bitmaps != NULL);
 
     for (i = 0; i < size; i++) {
         h = keys[i] * HASH_FACTOR;  // multiplicative hash
-        // bitmap |= h & -h;
-        p = h & (partitions - 1);  // use some hash bits to partition
-        h >>= log_partitions;  // use remaining hash bits for the bitmap
-        bitmaps[p] |= h & -h;  // update bitmap of partition
+        bitmap |= h & -h;
+        // p = h & (partitions - 1);  // use some hash bits to partition
+        // h >>= log_partitions;  // use remaining hash bits for the bitmap
+        // bitmaps[p] |= h & -h;  // update bitmap of partition
     }
 
     // collect sum
-    for (i = 0; i< partitions; i++)
-        sum += (1 << count_trailing_zeros(~bitmaps[i]));
+    // for (i = 0; i< partitions; i++)
+        // sum += (1 << count_trailing_zeros(~bitmaps[i]));
 
     // free thread local bitmaps
-    free(bitmaps);
+    // free(bitmaps);
     // write to estimate location
-    *estimate = sum;
+    *estimate = bitmap;
     return;
 }
 
@@ -249,7 +249,7 @@ void* q4112_run_thread(void* arg) {
     if (ret == PTHREAD_BARRIER_SERIAL_THREAD){
         uint32_t final_estimate = 0;
         for (i = 0; i < threads; i++)
-            final_estimate += estimates[i];
+            final_estimate += (1 << count_trailing_zeros(~estimates[i]));
         final_estimate  /= PHI;
         printf("final: %u\n", final_estimate);
         aggregate_table = (aggr_t*)calloc(final_estimate, sizeof(aggr_t));

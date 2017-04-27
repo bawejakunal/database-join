@@ -20,7 +20,7 @@ q4112_hj_1:	q4112_hj_1.o q4112_gen.o q4112_main.o
 
 ## Object file
 
-q4112_hj.o:	q4112.c
+q4112.o:	q4112.c
 	$(CC) $(CFLAGS) -c q4112.c
 
 q4112_hj.o:	q4112_hj.c

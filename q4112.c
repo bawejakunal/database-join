@@ -23,13 +23,6 @@ typedef struct {
   uint32_t val;
 } bucket_t;
 
-// result struct, contains sum of order values
-// and number of orders respectively
-// typedef struct {
-//     uint64_t sum;
-//     uint32_t count;
-// } result_t;
-
 // thread info struct
 typedef struct {
     pthread_t id;
@@ -151,7 +144,7 @@ void update_aggregates(const bucket_t *table,
     const uint32_t* outer_vals) {
 
     size_t o, h, agg_hash;
-    uint32_t key;
+    uint32_t key, agg_key, prev;
     uint32_t estimate = 1 << log_estimate;
 
     //  probe outer table using hash table
@@ -161,34 +154,46 @@ void update_aggregates(const bucket_t *table,
         //  multiplicative hashing
         h = (uint32_t) (key * HASH_FACTOR);
         h >>= 32 - log_buckets;
-	printf("%lu\n",o);
+        printf("%lu\n", o);
         //  search for matching bucket
         while (table[h].key != 0) {
-            //  keys match
+            //  product.id == order.product_id
             if (table[h].key == key) {
-                agg_hash = (uint32_t)(outer_aggr_keys[o] * HASH_FACTOR);
+                agg_key = outer_aggr_keys[o];
+                agg_hash = (uint32_t)(agg_key * HASH_FACTOR);
                 agg_hash >>= 32 - log_estimate;
 
-                // either hit a 0 aggregate key
-                // or hit that equals bucket key
-                // or occupy the bucket
-                while (!(aggr_tbl[agg_hash].key == outer_aggr_keys[o] ||
-                        aggr_tbl[agg_hash].key ==0) || 
-                        !__sync_bool_compare_and_swap(&aggr_tbl[agg_hash].key,
-                            0, outer_aggr_keys[o])) {
-                    // go to next bucket
+                // search for empty or hash bucket
+                while(!(aggr_tbl[agg_hash].key == agg_key ||
+                    aggr_tbl[agg_hash].key == 0))
                     agg_hash = (agg_hash + 1) & (estimate - 1);
+
+                // key found
+                if (aggr_tbl[agg_hash].key == agg_key){
+                    __sync_add_and_fetch(&aggr_tbl[agg_hash].sum,
+                    (uint64_t)table[h].val * outer_vals[o]);
+                    __sync_add_and_fetch(&aggr_tbl[agg_hash].count, 1);
                 }
 
-                // update aggregate sum
-                __sync_add_and_fetch(&aggr_tbl[agg_hash].sum,
-                    table[h].val * outer_vals[o]);
+                // attempt writing key and then update
+                else{
+                    do {
+                        prev = __sync_val_compare_and_swap(
+                            &aggr_tbl[agg_hash].key, 0, agg_key);
 
-                // update aggergate count
-                __sync_add_and_fetch(&aggr_tbl[agg_hash].count, 1);
-                break;
+                        // write succeeds or clashes
+                        if (prev == 0 || prev == agg_key) {
+                            __sync_add_and_fetch(&aggr_tbl[agg_hash].sum,
+                                (uint64_t)table[h].val * outer_vals[o]);
+                            __sync_add_and_fetch(&aggr_tbl[agg_hash].count, 1);
+                            break; // out of do-while
+                        }
+                        agg_hash = (agg_hash + 1) & (estimate - 1);
+                    }while(1);
+                }
+                break; // out of outer table probing
             }
-            //  go to next bucket (linear probing)
+            // go to next bucket (linear probing)
             h = (h + 1) & (buckets - 1);
         }
     }
@@ -213,15 +218,19 @@ int8_t alloc_aggr_tbl(const size_t threads, const size_t thread,
         estimate += (1 << count_trailing_zeros(~bitmaps[thread][j]));
     estimate /= PHI;
 
-    // approximate log
-    while (estimate > 1){
+    // check for power of 2
+    if (!(estimate & (estimate - 1)))
+        log_estimate = count_trailing_zeros(estimate);
+    else{
+        // approximate log
+        while (estimate > 1){
+            log_estimate += 1;
+            estimate >>= 1;
+        }
+        // overestimate a little
+        // avoid small sized aggregation table
         log_estimate += 1;
-        estimate >>= 1;
     }
-    // overestimate a little
-    // avoid small sized aggregation table
-    log_estimate += 1;
-    // print estimate
 
     // allocate table of size 2^log_estimate
     aggr_tbl = (aggr_t*)calloc(1 << log_estimate, sizeof(aggr_t));

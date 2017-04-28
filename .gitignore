@@ -1,6 +1,7 @@
 #Ignore object files
 *.o
 *.zip
+.nfs*
 q4112_hj_1
 q4112_nlj
 q4112_nlj_1

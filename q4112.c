@@ -46,7 +46,16 @@ typedef struct {
     uint32_t **bitmaps;
     int8_t log_partitions;
     int8_t *log_estimate;
+    // partial results
+    uint64_t avg;
+    uint32_t count;
 } q4112_run_info_t;
+
+// merged result struct
+typedef struct {
+    uint64_t avg;
+    uint32_t count;
+} result_t;
 
 // global aggregate table struct
 typedef struct
@@ -146,6 +155,7 @@ void update_aggregates(const bucket_t *table,
     size_t o, h, agg_hash;
     uint32_t key, agg_key, prev;
     uint32_t estimate = 1 << log_estimate;
+    uint64_t value;
 
     //  probe outer table using hash table
     //  outer_beg to outer_end - 1
@@ -154,11 +164,12 @@ void update_aggregates(const bucket_t *table,
         //  multiplicative hashing
         h = (uint32_t) (key * HASH_FACTOR);
         h >>= 32 - log_buckets;
-        printf("%lu\n", o);
+
         //  search for matching bucket
         while (table[h].key != 0) {
             //  product.id == order.product_id
             if (table[h].key == key) {
+                value = (uint64_t)table[h].val * outer_vals[o];
                 agg_key = outer_aggr_keys[o];
                 agg_hash = (uint32_t)(agg_key * HASH_FACTOR);
                 agg_hash >>= 32 - log_estimate;
@@ -170,8 +181,7 @@ void update_aggregates(const bucket_t *table,
 
                 // key found
                 if (aggr_tbl[agg_hash].key == agg_key){
-                    __sync_add_and_fetch(&aggr_tbl[agg_hash].sum,
-                    (uint64_t)table[h].val * outer_vals[o]);
+                    __sync_add_and_fetch(&aggr_tbl[agg_hash].sum, value);
                     __sync_add_and_fetch(&aggr_tbl[agg_hash].count, 1);
                 }
 
@@ -184,7 +194,7 @@ void update_aggregates(const bucket_t *table,
                         // write succeeds or clashes
                         if (prev == 0 || prev == agg_key) {
                             __sync_add_and_fetch(&aggr_tbl[agg_hash].sum,
-                                (uint64_t)table[h].val * outer_vals[o]);
+                                value);
                             __sync_add_and_fetch(&aggr_tbl[agg_hash].count, 1);
                             break; // out of do-while
                         }
@@ -200,6 +210,33 @@ void update_aggregates(const bucket_t *table,
     return;
 }
 
+// merge results from aggregate table
+result_t partial_result(const size_t thread, const size_t threads,
+    const int8_t log_estimate){
+
+    uint32_t i;
+    uint32_t estimate = 1 << log_estimate;
+    result_t result = {0, 0};
+
+    // thread boundaries for outer table
+    size_t beg = (estimate / threads) * (thread + 0);
+    size_t end = (estimate / threads) * (thread + 1);
+
+    // handle last thread boundary
+    if (thread + 1 == threads)
+        end = estimate;
+
+    // iterate over portion of aggregate table
+    for(i = beg; i < end; i++){
+        if (aggr_tbl[i].count > 0){
+            result.avg += aggr_tbl[i].sum / aggr_tbl[i].count;
+            result.count += aggr_tbl[i].count;
+        }
+    }
+
+    return result;
+}
+
 // allocate memory to aggregate table
 int8_t alloc_aggr_tbl(const size_t threads, const size_t thread, 
     const uint32_t partitions, uint32_t **bitmaps){
@@ -213,6 +250,7 @@ int8_t alloc_aggr_tbl(const size_t threads, const size_t thread,
         for (j = 0; j < partitions; j++)
             bitmaps[thread][j] |= bitmaps[i][j];
     }
+
     // calculate estimate
     for (j = 0; j < partitions; j++)
         estimate += (1 << count_trailing_zeros(~bitmaps[thread][j]));
@@ -244,6 +282,7 @@ void* q4112_run_thread(void* arg) {
     assert(pthread_equal(pthread_self(), info->id));
 
     int ret;
+    result_t result = {0, 0};
 
     //  copy info
     const size_t thread  = info->thread;
@@ -309,9 +348,14 @@ void* q4112_run_thread(void* arg) {
     update_aggregates(table, log_buckets, buckets, outer_beg, outer_end,
         outer_keys, outer_aggr_keys, *log_estimate, outer_vals);
 
+    // synchronize to merge results
+    ret = pthread_barrier_wait(barrier);
+    assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
+
+    result = partial_result(thread, threads, *log_estimate);
     // extract query result in thread info
-    // info->sum = result.sum;
-    // info->count = result.count;
+    info->avg = result.avg;
+    info->count = result.count;
     pthread_exit(NULL);
 }
 
@@ -399,10 +443,12 @@ uint64_t q4112_run(
     }
 
     //  gather result from all threads
-    uint64_t sum = 0;
-    uint32_t count = 0;
+    uint64_t averages = 0;
+    uint32_t counts = 0;
     for (t = 0; t != threads; ++t) {
         pthread_join(info[t].id, NULL);
+        averages += info[t].avg;
+        counts += info[t].count;
     }
 
     // destroy barrier after threads join
@@ -419,5 +465,5 @@ uint64_t q4112_run(
     free(table);
 
     // return average
-    return sum / count;
+    return averages / counts;
 }

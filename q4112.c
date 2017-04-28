@@ -153,7 +153,6 @@ void update_aggregates(const bucket_t *table,
     size_t o, h, agg_hash;
     uint32_t key;
     uint32_t estimate = 1 << log_estimate;
-    printf("%d\t%u\n", log_estimate, estimate);
 
     //  probe outer table using hash table
     //  outer_beg to outer_end - 1
@@ -162,6 +161,7 @@ void update_aggregates(const bucket_t *table,
         //  multiplicative hashing
         h = (uint32_t) (key * HASH_FACTOR);
         h >>= 32 - log_buckets;
+	printf("%lu\n",o);
         //  search for matching bucket
         while (table[h].key != 0) {
             //  keys match
@@ -172,8 +172,8 @@ void update_aggregates(const bucket_t *table,
                 // either hit a 0 aggregate key
                 // or hit that equals bucket key
                 // or occupy the bucket
-                while (aggr_tbl[agg_hash].key != outer_aggr_keys[o] ||
-                        aggr_tbl[agg_hash].key != 0 || 
+                while (!(aggr_tbl[agg_hash].key == outer_aggr_keys[o] ||
+                        aggr_tbl[agg_hash].key ==0) || 
                         !__sync_bool_compare_and_swap(&aggr_tbl[agg_hash].key,
                             0, outer_aggr_keys[o])) {
                     // go to next bucket

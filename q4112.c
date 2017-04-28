@@ -230,7 +230,7 @@ result_t partial_result(const size_t thread, const size_t threads,
     for(i = beg; i < end; i++){
         if (aggr_tbl[i].count > 0){
             result.avg += aggr_tbl[i].sum / aggr_tbl[i].count;
-            result.count += aggr_tbl[i].count;
+            result.count += 1;
         }
     }
 
@@ -444,7 +444,7 @@ uint64_t q4112_run(
 
     //  gather result from all threads
     uint64_t averages = 0;
-    uint32_t counts = 0;
+    uint64_t counts = 0;
     for (t = 0; t != threads; ++t) {
         pthread_join(info[t].id, NULL);
         averages += info[t].avg;

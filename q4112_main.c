@@ -103,7 +103,7 @@ int main(int argc, char* argv[]) {
   FILE *fp = fopen(res_file, "a");
   assert(fp != NULL);
   int th, repeat;
-  for(th = threads; th <= threads; th <<= 1){
+  for(th = 1; th <= threads; th <<= 1){
     for (repeat = 1; repeat <= 5; repeat++){
         // run join using specified number of threads
         uint64_t run_ns = real_time();

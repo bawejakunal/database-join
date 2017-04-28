@@ -151,8 +151,9 @@ void update_aggregates(const bucket_t *table,
     const uint32_t* outer_vals) {
 
     size_t o, h, agg_hash;
-    uint32_t key, tab;
+    uint32_t key;
     uint32_t estimate = 1 << log_estimate;
+    printf("%d\t%u\n", log_estimate, estimate);
 
     //  probe outer table using hash table
     //  outer_beg to outer_end - 1
@@ -162,10 +163,9 @@ void update_aggregates(const bucket_t *table,
         h = (uint32_t) (key * HASH_FACTOR);
         h >>= 32 - log_buckets;
         //  search for matching bucket
-        tab = table[h].key;
-        while (tab != 0) {
+        while (table[h].key != 0) {
             //  keys match
-            if (tab == key) {
+            if (table[h].key == key) {
                 agg_hash = (uint32_t)(outer_aggr_keys[o] * HASH_FACTOR);
                 agg_hash >>= 32 - log_estimate;
 
@@ -190,7 +190,6 @@ void update_aggregates(const bucket_t *table,
             }
             //  go to next bucket (linear probing)
             h = (h + 1) & (buckets - 1);
-            tab = table[h].key;
         }
     }
     return;
@@ -223,7 +222,6 @@ int8_t alloc_aggr_tbl(const size_t threads, const size_t thread,
     // avoid small sized aggregation table
     log_estimate += 1;
     // print estimate
-    printf("%d\t%u", log_estimate, (uint32_t)(1 << log_estimate));
 
     // allocate table of size 2^log_estimate
     aggr_tbl = (aggr_t*)calloc(1 << log_estimate, sizeof(aggr_t));
@@ -298,8 +296,7 @@ void* q4112_run_thread(void* arg) {
     // synchronize threads before aggregation
     ret = pthread_barrier_wait(barrier);
     assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
- 
-    printf("%lu\t%d\n", thread, *log_estimate);
+
     update_aggregates(table, log_buckets, buckets, outer_beg, outer_end,
         outer_keys, outer_aggr_keys, *log_estimate, outer_vals);
 

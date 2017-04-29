@@ -249,9 +249,8 @@ void update_aggregates(const bucket_t *table,
                 cache[agg_hash].count += 1;
 
                 // flush cache if full
-                if (fill == entries) {
+                if (fill == entries)
                     flush_cache(cache, &fill, entries, estimate, log_estimate);
-		}
 
                 break; // out of outer table probing
             }

@@ -9,7 +9,6 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -137,54 +136,6 @@ int inner_hash_table(bucket_t* table,
   return (end - begin);
 }
 
-void flush_cache(aggr_t *cache,
-    const uint16_t entries,
-    const uint32_t estimate,
-    const int8_t log_estimate) {
-
-    uint16_t i;
-    uint32_t agg_hash, agg_key, count, prev;
-    uint64_t sum;
-
-    for (i = 0; i < entries; i++) {
-        if (cache[i].count == 0)
-            continue;
-        agg_key = cache[i].key;
-        sum = cache[i].sum;
-        count = cache[i].count;
-        agg_hash = agg_key * HASH_FACTOR;
-        agg_hash >>= 32 - log_estimate;
-
-        // search for empty or hash bucket
-        while(!(aggr_tbl[agg_hash].key == agg_key ||
-            aggr_tbl[agg_hash].key == 0))
-            agg_hash = (agg_hash + 1) & (estimate - 1);
-
-        // key found
-        if (aggr_tbl[agg_hash].key == agg_key){
-            __sync_add_and_fetch(&aggr_tbl[agg_hash].sum, sum);
-            __sync_add_and_fetch(&aggr_tbl[agg_hash].count, count);
-        }
-
-        // attempt writing key and then update
-        else {
-            do {
-                prev = __sync_val_compare_and_swap(&aggr_tbl[agg_hash].key, 0,
-                        agg_key);
-                // write succeeds or clashes
-                if (prev == 0 || prev == agg_key) {
-                    __sync_add_and_fetch(&aggr_tbl[agg_hash].sum, sum);
-                    __sync_add_and_fetch(&aggr_tbl[agg_hash].count, count);
-                    break; // out of do-while
-                }
-                agg_hash = (agg_hash + 1) & (estimate - 1);
-            }while(1);
-        }
-    }
-    cache = (aggr_t*)memset(cache, 0, entries * sizeof(aggr_t));
-    return;
-}
-
 // Called on a portion of outer table
 // Compares primary key of outer relation record
 // with records inserted in hash table based on
@@ -202,16 +153,9 @@ void update_aggregates(const bucket_t *table,
     const uint32_t* outer_vals) {
 
     size_t o, h, agg_hash;
-    uint32_t key, agg_key;
-    const uint32_t estimate = 1 << log_estimate;
+    uint32_t key, agg_key, prev;
+    uint32_t estimate = 1 << log_estimate;
     uint64_t value;
-    uint16_t fill = 0; // cache filled
-    const uint16_t entries = 256; //max entries
-    const int8_t log_entries = 8;
-
-    // allocate local cache
-    aggr_t *cache = (aggr_t*)calloc(entries, sizeof(aggr_t));
-    assert(cache != NULL);
 
     //  probe outer table using hash table
     //  outer_beg to outer_end - 1
@@ -228,38 +172,41 @@ void update_aggregates(const bucket_t *table,
                 value = (uint64_t)table[h].val * outer_vals[o];
                 agg_key = outer_aggr_keys[o];
                 agg_hash = (uint32_t)(agg_key * HASH_FACTOR);
-                agg_hash >>= 32 - log_entries;
-                // agg_hash >>= 32 - log_estimate;
+                agg_hash >>= 32 - log_estimate;
 
-                // probe cache
-                while(!(cache[agg_hash].key == agg_key ||
-                    cache[agg_hash].key == 0)) {
-                    agg_hash = (agg_hash + 1) & (entries - 1);
+                // search for empty or hash bucket
+                while(!(aggr_tbl[agg_hash].key == agg_key ||
+                    aggr_tbl[agg_hash].key == 0))
+                    agg_hash = (agg_hash + 1) & (estimate - 1);
+
+                // key found
+                if (aggr_tbl[agg_hash].key == agg_key){
+                    __sync_add_and_fetch(&aggr_tbl[agg_hash].sum, value);
+                    __sync_add_and_fetch(&aggr_tbl[agg_hash].count, 1);
                 }
 
-                // create new entry in cache if not present
-                if (cache[agg_hash].key == 0) {
-                    fill += 1;
-                    cache[agg_hash].key = agg_key;
+                // attempt writing key and then update
+                else{
+                    do {
+                        prev = __sync_val_compare_and_swap(
+                            &aggr_tbl[agg_hash].key, 0, agg_key);
+
+                        // write succeeds or clashes
+                        if (prev == 0 || prev == agg_key) {
+                            __sync_add_and_fetch(&aggr_tbl[agg_hash].sum,
+                                value);
+                            __sync_add_and_fetch(&aggr_tbl[agg_hash].count, 1);
+                            break; // out of do-while
+                        }
+                        agg_hash = (agg_hash + 1) & (estimate - 1);
+                    }while(1);
                 }
-
-                // update in thread local cache
-                cache[agg_hash].sum += value;
-                cache[agg_hash].count += 1;
-
-                // flush cache if full
-                if (fill == entries)
-                    flush_cache(cache, entries, estimate, log_estimate);
-
                 break; // out of outer table probing
             }
             // go to next bucket (linear probing)
             h = (h + 1) & (buckets - 1);
         }
     }
-
-    flush_cache(cache, entries, estimate, log_estimate);
-    free(cache);
     return;
 }
 
@@ -286,6 +233,7 @@ result_t partial_result(const size_t thread, const size_t threads,
             result.count += 1;
         }
     }
+
     return result;
 }
 

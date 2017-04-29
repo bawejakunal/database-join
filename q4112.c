@@ -23,14 +23,6 @@ typedef struct {
   uint32_t val;
 } bucket_t;
 
-// global aggregate table entry struct
-typedef struct
-{
-    uint32_t key;   // aggregate key
-    uint64_t sum;   // aggregate sum
-    uint32_t count; // aggregate count
-} aggr_t;
-
 // thread info struct
 typedef struct {
     pthread_t id;
@@ -47,21 +39,13 @@ typedef struct {
     // pass bucket info to threads
     int8_t log_buckets;
     size_t buckets;
-
-    // inner hash table
     bucket_t* table;
-
-    // pointer to global aggregate table
-    aggr_t **aggr_tbl;
-
     // thread barrier
     pthread_barrier_t *barrier;
-
-    // Flajolet-Martin estimation variables
+    // Flajolet-Martin estimation values
     uint32_t **bitmaps;
     int8_t log_partitions;
     int8_t *log_estimate;
-
     // partial results
     uint64_t avg;
     uint32_t count;
@@ -72,6 +56,19 @@ typedef struct {
     uint64_t avg;
     uint32_t count;
 } result_t;
+
+// global aggregate table struct
+typedef struct
+{
+    uint32_t key;   // aggregate key
+    uint64_t sum;   // aggregate sum
+    uint32_t count; // aggregate count
+} aggr_t;
+
+// pointer to global aggregate table
+// shared across threads
+aggr_t *aggr_tbl;
+
 
 // count trailing zeroes in binary representation
 uint32_t count_trailing_zeros(uint32_t value){
@@ -100,6 +97,7 @@ void _estimate(uint32_t *bitmaps, const int8_t log_partitions,
     }
     return;
 }
+
 
 // fills given hash table
 int inner_hash_table(bucket_t* table,
@@ -144,8 +142,7 @@ int inner_hash_table(bucket_t* table,
 // the multiplicative hash computed
 // Returns partial result as result_t
 // each query thread calls this method
-void update_aggregates(aggr_t *aggr_tbl,
-    const bucket_t *table,
+void update_aggregates(const bucket_t *table,
     const int8_t log_buckets,
     const size_t buckets,
     const size_t outer_beg,
@@ -172,7 +169,7 @@ void update_aggregates(aggr_t *aggr_tbl,
         while (table[h].key != 0) {
             //  product.id == order.product_id
             if (table[h].key == key) {
-                value = (uint64_t)table[h].val * (uint64_t)outer_vals[o];
+                value = (uint64_t)table[h].val * outer_vals[o];
                 agg_key = outer_aggr_keys[o];
                 agg_hash = (uint32_t)(agg_key * HASH_FACTOR);
                 agg_hash >>= 32 - log_estimate;
@@ -214,10 +211,8 @@ void update_aggregates(aggr_t *aggr_tbl,
 }
 
 // merge results from aggregate table
-result_t partial_result(const size_t thread,
-    const size_t threads,
-    const aggr_t *aggr_tbl,
-    const int8_t log_estimate) {
+result_t partial_result(const size_t thread, const size_t threads,
+    const int8_t log_estimate){
 
     uint32_t i;
     uint32_t estimate = 1 << log_estimate;
@@ -243,8 +238,7 @@ result_t partial_result(const size_t thread,
 }
 
 // allocate memory to aggregate table
-int8_t alloc_aggr_tbl(aggr_t * aggr_tbl, const size_t threads,
-    const size_t thread, 
+int8_t alloc_aggr_tbl(const size_t threads, const size_t thread, 
     const uint32_t partitions, uint32_t **bitmaps){
     uint32_t i, j, estimate = 0;
     int8_t log_estimate = 0;
@@ -297,6 +291,9 @@ void* q4112_run_thread(void* arg) {
     const size_t outer_tuples = info->outer_tuples;
     const int8_t log_buckets = info->log_buckets;
     const size_t buckets = info->buckets;
+    bucket_t* table = info->table;
+    pthread_barrier_t *barrier = info->barrier;
+
     const uint32_t* inner_keys = info->inner_keys;
     const uint32_t* inner_vals = info->inner_vals;
     const uint32_t* outer_keys = info->outer_keys;
@@ -304,20 +301,7 @@ void* q4112_run_thread(void* arg) {
     const uint32_t* outer_aggr_keys = info->outer_aggr_keys;
     const int8_t log_partitions = info->log_partitions;
     const uint32_t partitions = 1 << log_partitions;
-
-    // inner hash table
-    bucket_t* table = info->table;
-
-    // barrier for threads
-    pthread_barrier_t *barrier = info->barrier;
-
-    // log(base 2) of estimate for unique aggregation keys
-    // value is filled in by one of the threads
     int8_t *log_estimate = info->log_estimate;
-
-    // pointer to global aggregation table
-    // that needs to be allocated based on estimation
-    aggr_t *aggr_tbl = *info->aggr_tbl;
 
     // corresponding bitmaps for the thread
     uint32_t **bitmaps = info->bitmaps;
@@ -336,42 +320,39 @@ void* q4112_run_thread(void* arg) {
         inner_end = inner_tuples;
     }
 
-    // insert inner tuples to hash table
-    inner_hash_table(table, inner_beg, inner_end, inner_keys,
-        inner_vals, log_buckets, buckets);
+    // get estimate for thread's partition
+    // number of log_partitions = number of threads
+    _estimate(bitmaps[thread], log_partitions, 
+        (outer_aggr_keys + outer_beg), (outer_end - outer_beg));
 
-    // synchronize participating threads
+    // synchronize participating threads for collecting estimates
     ret = pthread_barrier_wait(barrier);
     assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
 
-    // get estimate for thread's partition
-    // 1 pass estimation using Flajolet-Martin Algorithm
-    _estimate(bitmaps[thread], log_partitions, 
-        (outer_aggr_keys + outer_beg), (outer_end - outer_beg));
+    // last thread does this
+    if (ret == PTHREAD_BARRIER_SERIAL_THREAD)
+        *log_estimate = alloc_aggr_tbl(threads, thread, partitions, bitmaps);
 
     // synchronize participating threads for aggergate table allocation
     ret = pthread_barrier_wait(barrier);
     assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
 
-    // last thread to reach the barrier merges the bitmaps and
-    // makes final estimate
-    if (ret == PTHREAD_BARRIER_SERIAL_THREAD)
-        *log_estimate = alloc_aggr_tbl(aggr_tbl, threads, thread,
-            partitions, bitmaps);
+    // insert to hash table
+    inner_hash_table(table, inner_beg, inner_end, inner_keys,
+        inner_vals, log_buckets, buckets);
 
     // synchronize threads before aggregation
     ret = pthread_barrier_wait(barrier);
     assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
 
-    update_aggregates(aggr_tbl, table, log_buckets, buckets, outer_beg,
-        outer_end, outer_keys, outer_aggr_keys, *log_estimate, outer_vals);
+    update_aggregates(table, log_buckets, buckets, outer_beg, outer_end,
+        outer_keys, outer_aggr_keys, *log_estimate, outer_vals);
 
     // synchronize to merge results
     ret = pthread_barrier_wait(barrier);
     assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
 
-    result = partial_result(thread, threads, aggr_tbl, *log_estimate);
-
+    result = partial_result(thread, threads, *log_estimate);
     // extract query result in thread info
     info->avg = result.avg;
     info->count = result.count;
@@ -435,10 +416,6 @@ uint64_t q4112_run(
     bucket_t* table = (bucket_t*) calloc(buckets, sizeof(bucket_t));
     assert(table != NULL);
 
-    // double pointer for global aggregate table
-    aggr_t **aggr_tbl = (aggr_t**)malloc(sizeof(aggr_t*));
-    assert(aggr_tbl != NULL);
-
     // initialize thread barrier
     ret = pthread_barrier_init(barrier, NULL, threads);
     assert(ret == 0);
@@ -454,13 +431,10 @@ uint64_t q4112_run(
         info[t].outer_vals = outer_vals;
         info[t].inner_tuples = inner_tuples;
         info[t].outer_tuples = outer_tuples;
-        // inner hash table
         info[t].table = table;
         info[t].buckets = buckets;
         info[t].log_buckets = log_buckets;
         info[t].barrier = barrier;
-        // global aggregate table
-        info[t].aggr_tbl = aggr_tbl;
         //Flajolet-Martin estimates
         info[t].log_partitions = log_partitions;
         info[t].bitmaps = bitmaps;  // array of bitmaps
@@ -468,7 +442,7 @@ uint64_t q4112_run(
         pthread_create(&info[t].id, NULL, q4112_run_thread, &info[t]);
     }
 
-    // gather result from all threads
+    //  gather result from all threads
     uint64_t averages = 0;
     uint64_t counts = 0;
     for (t = 0; t != threads; ++t) {
@@ -485,7 +459,6 @@ uint64_t q4112_run(
     free(log_estimate);
     for (ret = 0; ret < threads; ret++)
         free(bitmaps[ret]);
-    free(*aggr_tbl);
     free(bitmaps);
     free(aggr_tbl);
     free(info);

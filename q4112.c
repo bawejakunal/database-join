@@ -137,21 +137,19 @@ int inner_hash_table(bucket_t* table,
   return (end - begin);
 }
 
+// flush the complete thread cache to global aggregate table
 void flush_cache(aggr_t *cache,
     const uint16_t entries,
     const uint32_t estimate,
     const int8_t log_estimate) {
 
     uint16_t i;
-    uint32_t agg_hash, agg_key, count, prev;
-    uint64_t sum;
+    uint32_t agg_hash, agg_key, prev;
 
     for (i = 0; i < entries; i++) {
         if (cache[i].count == 0)
             continue;
         agg_key = cache[i].key;
-        sum = cache[i].sum;
-        count = cache[i].count;
         agg_hash = (uint32_t)(agg_key * HASH_FACTOR);
         agg_hash >>= 32 - log_estimate;
 
@@ -171,11 +169,9 @@ void flush_cache(aggr_t *cache,
                 agg_hash = (agg_hash + 1) & (estimate - 1);
             }while(1);
         }
-        __sync_add_and_fetch(&aggr_tbl[agg_hash].sum, sum);
-        __sync_add_and_fetch(&aggr_tbl[agg_hash].count, count);
+        __sync_add_and_fetch(&aggr_tbl[agg_hash].sum, cache[i].sum);
+        __sync_add_and_fetch(&aggr_tbl[agg_hash].count, cache[i].count);
     }
-    // cache = (aggr_t*)memset(cache, 0, entries * sizeof(aggr_t));
-    // *fill = 0; // reset fill count of thread local hash table
     return;
 }
 
@@ -229,12 +225,12 @@ void update_aggregates(const bucket_t *table,
                     cache[agg_hash].count += 1;
                 }
 
-		// empty slot, write first time
-		else if(cache[agg_hash].key == 0){
-		    cache[agg_hash].key = agg_key;
+                // empty slot, write first time
+                else if(cache[agg_hash].key == 0) {
+                    cache[agg_hash].key = agg_key;
                     cache[agg_hash].sum = value;
                     cache[agg_hash].count = 1;
-		}
+                }
 
                 // cache miss, flush the slot
                 else {
@@ -250,7 +246,7 @@ void update_aggregates(const bucket_t *table,
                     // if key not matched attempt writing aggregate key
                     if (!(aggr_tbl[glb_hash].key == cache_key)){
                         // probe aggregate table to write the key
-                        do{
+                        do {
                             prev = __sync_val_compare_and_swap(
                                 &aggr_tbl[glb_hash].key, 0, cache_key);
                             // cache_key written or clashed
@@ -292,7 +288,7 @@ result_t partial_result(const size_t thread, const size_t threads,
     result_t result = {0, 0};
 
     // thread boundaries for outer table
-    size_t beg = (estimate / threads) * (thread + 0);
+    size_t beg = (estimate / threads) * thread;
     size_t end = (estimate / threads) * (thread + 1);
 
     // handle last thread boundary

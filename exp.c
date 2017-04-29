@@ -179,29 +179,19 @@ void update_aggregates(const bucket_t *table,
                     aggr_tbl[agg_hash].key == 0))
                     agg_hash = (agg_hash + 1) & (estimate - 1);
 
-                // key found
-                if (aggr_tbl[agg_hash].key == agg_key){
-                    __sync_add_and_fetch(&aggr_tbl[agg_hash].sum, value);
-                    __sync_add_and_fetch(&aggr_tbl[agg_hash].count, 1);
-                }
-
-                // attempt writing key and then update
-                else{
-                    do {
-                        prev = __sync_val_compare_and_swap(
-                            &aggr_tbl[agg_hash].key, 0, agg_key);
-
-                        // write succeeds or clashes
-                        if (prev == 0 || prev == agg_key) {
-                            __sync_add_and_fetch(&aggr_tbl[agg_hash].sum,
-                                value);
-                            __sync_add_and_fetch(&aggr_tbl[agg_hash].count, 1);
-                            break; // out of do-while
-                        }
-                        agg_hash = (agg_hash + 1) & (estimate - 1);
-                    }while(1);
-                }
-                break; // out of outer table probing
+        	// aggregation key did not match 
+        	if (!(aggr_tbl[agg_hash].key == agg_key)) {
+            	    do {
+                        prev = __sync_val_compare_and_swap(&aggr_tbl[agg_hash].key, 0,
+                        	agg_key);
+                	// aggr_key write succeeds or clashes
+                	if (prev == 0 || prev == agg_key)
+                    		break; // out of do-while
+                	agg_hash = (agg_hash + 1) & (estimate - 1);
+            	    }while(1);
+        	}
+               __sync_add_and_fetch(&aggr_tbl[agg_hash].sum, value);
+               __sync_add_and_fetch(&aggr_tbl[agg_hash].count, 1);
             }
             // go to next bucket (linear probing)
             h = (h + 1) & (buckets - 1);

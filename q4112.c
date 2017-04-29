@@ -138,7 +138,6 @@ int inner_hash_table(bucket_t* table,
 }
 
 void flush_cache(aggr_t *cache,
-    uint16_t *fill,
     const uint16_t entries,
     const uint32_t estimate,
     const int8_t log_estimate) {
@@ -153,10 +152,10 @@ void flush_cache(aggr_t *cache,
         agg_key = cache[i].key;
         sum = cache[i].sum;
         count = cache[i].count;
-        agg_hash = agg_key * HASH_FACTOR;
+        agg_hash = (uint32_t)(agg_key * HASH_FACTOR);
         agg_hash >>= 32 - log_estimate;
 
-        // search for empty or hash bucket
+        // search for empty bucket or matching bucket
         while(!(aggr_tbl[agg_hash].key == agg_key ||
             aggr_tbl[agg_hash].key == 0))
             agg_hash = (agg_hash + 1) & (estimate - 1);
@@ -172,7 +171,6 @@ void flush_cache(aggr_t *cache,
                 agg_hash = (agg_hash + 1) & (estimate - 1);
             }while(1);
         }
-
         __sync_add_and_fetch(&aggr_tbl[agg_hash].sum, sum);
         __sync_add_and_fetch(&aggr_tbl[agg_hash].count, count);
     }
@@ -201,7 +199,6 @@ void update_aggregates(const bucket_t *table,
     uint32_t key, agg_key, cache_key, prev;
     uint32_t estimate = 1 << log_estimate;
     uint64_t value;
-    uint16_t fill = 0; // cache filled
     const uint16_t entries = 256; //max entries
     const int8_t log_entries = 8;
 
@@ -223,20 +220,26 @@ void update_aggregates(const bucket_t *table,
             if (table[h].key == key) {
                 value = (uint64_t)table[h].val * outer_vals[o];
                 agg_key = outer_aggr_keys[o];
-                agg_hash = agg_key * HASH_FACTOR;
+                agg_hash = (uint32_t)(agg_key * HASH_FACTOR);
                 agg_hash >>= 32 - log_entries;
 
-                // cache hit or empty slot the update cache slot
-                if (cache[agg_hash].key == agg_key || !cache[agg_hash].key) {
+                // cache hit, increment values
+                if (cache[agg_hash].key == agg_key) {
                     cache[agg_hash].sum += value;
                     cache[agg_hash].count += 1;
                 }
 
-                // cache miss
+		// empty slot, write first time
+		else if(cache[agg_hash].key == 0){
+		    cache[agg_hash].key = agg_key;
+                    cache[agg_hash].sum = value;
+                    cache[agg_hash].count = 1;
+		}
+
+                // cache miss, flush the slot
                 else {
-                    // flush this slot
                     cache_key = cache[agg_hash].key;
-                    glb_hash = cache_key * HASH_FACTOR;
+                    glb_hash = (uint32_t)(cache_key * HASH_FACTOR);
                     glb_hash >>= 32 - log_estimate;
 
                     // search for 0 or matching aggregate key
@@ -275,7 +278,7 @@ void update_aggregates(const bucket_t *table,
         }
     }
 
-    flush_cache(cache, &fill, entries, estimate, log_estimate);
+    flush_cache(cache, entries, estimate, log_estimate);
     free(cache);
     return;
 }

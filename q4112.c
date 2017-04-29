@@ -138,6 +138,7 @@ int inner_hash_table(bucket_t* table,
 }
 
 void flush_cache(aggr_t *cache,
+    uint16_t *fill,
     const uint16_t entries,
     const uint32_t estimate,
     const int8_t log_estimate) {
@@ -182,6 +183,7 @@ void flush_cache(aggr_t *cache,
         }
     }
     cache = (aggr_t*)memset(cache, 0, entries * sizeof(aggr_t));
+    *fill = 0; // reset fill count of thread local hash table
     return;
 }
 
@@ -203,7 +205,7 @@ void update_aggregates(const bucket_t *table,
 
     size_t o, h, agg_hash;
     uint32_t key, agg_key;
-    const uint32_t estimate = 1 << log_estimate;
+    uint32_t estimate = 1 << log_estimate;
     uint64_t value;
     uint16_t fill = 0; // cache filled
     const uint16_t entries = 256; //max entries
@@ -229,7 +231,6 @@ void update_aggregates(const bucket_t *table,
                 agg_key = outer_aggr_keys[o];
                 agg_hash = (uint32_t)(agg_key * HASH_FACTOR);
                 agg_hash >>= 32 - log_entries;
-                // agg_hash >>= 32 - log_estimate;
 
                 // probe cache
                 while(!(cache[agg_hash].key == agg_key ||
@@ -248,8 +249,9 @@ void update_aggregates(const bucket_t *table,
                 cache[agg_hash].count += 1;
 
                 // flush cache if full
-                if (fill == entries)
-                    flush_cache(cache, entries, estimate, log_estimate);
+                if (fill == entries) {
+                    flush_cache(cache, &fill, entries, estimate, log_estimate);
+		}
 
                 break; // out of outer table probing
             }
@@ -258,7 +260,7 @@ void update_aggregates(const bucket_t *table,
         }
     }
 
-    flush_cache(cache, entries, estimate, log_estimate);
+    flush_cache(cache, &fill, entries, estimate, log_estimate);
     free(cache);
     return;
 }

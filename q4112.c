@@ -161,29 +161,23 @@ void flush_cache(aggr_t *cache,
             aggr_tbl[agg_hash].key == 0))
             agg_hash = (agg_hash + 1) & (estimate - 1);
 
-        // key found
-        if (aggr_tbl[agg_hash].key == agg_key){
-            __sync_add_and_fetch(&aggr_tbl[agg_hash].sum, sum);
-            __sync_add_and_fetch(&aggr_tbl[agg_hash].count, count);
-        }
-
-        // attempt writing key and then update
-        else {
+        // aggregation key did not match 
+        if (!(aggr_tbl[agg_hash].key == agg_key)) {
             do {
                 prev = __sync_val_compare_and_swap(&aggr_tbl[agg_hash].key, 0,
                         agg_key);
-                // write succeeds or clashes
-                if (prev == 0 || prev == agg_key) {
-                    __sync_add_and_fetch(&aggr_tbl[agg_hash].sum, sum);
-                    __sync_add_and_fetch(&aggr_tbl[agg_hash].count, count);
+                // aggr_key write succeeds or clashes
+                if (prev == 0 || prev == agg_key)
                     break; // out of do-while
-                }
                 agg_hash = (agg_hash + 1) & (estimate - 1);
             }while(1);
         }
+
+        __sync_add_and_fetch(&aggr_tbl[agg_hash].sum, sum);
+        __sync_add_and_fetch(&aggr_tbl[agg_hash].count, count);
     }
-    cache = (aggr_t*)memset(cache, 0, entries * sizeof(aggr_t));
-    *fill = 0; // reset fill count of thread local hash table
+    // cache = (aggr_t*)memset(cache, 0, entries * sizeof(aggr_t));
+    // *fill = 0; // reset fill count of thread local hash table
     return;
 }
 
@@ -203,8 +197,8 @@ void update_aggregates(const bucket_t *table,
     const int8_t log_estimate,
     const uint32_t* outer_vals) {
 
-    size_t o, h, agg_hash;
-    uint32_t key, agg_key;
+    size_t o, h, agg_hash, glb_hash;
+    uint32_t key, agg_key, cache_key, prev;
     uint32_t estimate = 1 << log_estimate;
     uint64_t value;
     uint16_t fill = 0; // cache filled
@@ -229,29 +223,51 @@ void update_aggregates(const bucket_t *table,
             if (table[h].key == key) {
                 value = (uint64_t)table[h].val * outer_vals[o];
                 agg_key = outer_aggr_keys[o];
-                agg_hash = (uint32_t)(agg_key * HASH_FACTOR);
+                agg_hash = agg_key * HASH_FACTOR;
                 agg_hash >>= 32 - log_entries;
 
-                // probe cache
-                while(!(cache[agg_hash].key == agg_key ||
-                    cache[agg_hash].key == 0)) {
-                    agg_hash = (agg_hash + 1) & (entries - 1);
+                // cache hit or empty slot the update cache slot
+                if (cache[agg_hash].key == agg_key || !cache[agg_hash].key) {
+                    cache[agg_hash].sum += value;
+                    cache[agg_hash].count += 1;
                 }
 
-                // create new entry in cache if not present
-                if (cache[agg_hash].key == 0) {
-                    fill += 1;
+                // cache miss
+                else {
+                    // flush this slot
+                    cache_key = cache[agg_hash].key;
+                    glb_hash = cache_key * HASH_FACTOR;
+                    glb_hash >>= 32 - log_estimate;
+
+                    // search for 0 or matching aggregate key
+                    while(!(aggr_tbl[glb_hash].key == cache_key ||
+                        aggr_tbl[glb_hash].key == 0))
+                        glb_hash = (glb_hash + 1) & (estimate - 1);
+
+                    // if key not matched attempt writing aggregate key
+                    if (!(aggr_tbl[glb_hash].key == cache_key)){
+                        // probe aggregate table to write the key
+                        do{
+                            prev = __sync_val_compare_and_swap(
+                                &aggr_tbl[glb_hash].key, 0, cache_key);
+                            // cache_key written or clashed
+                            if (prev == 0 || prev == agg_key)
+                                break;
+                            glb_hash = (glb_hash + 1) & (estimate - 1);
+                        } while(1);
+                    }
+
+                    // atomically add to global aggregate table entry
+                    __sync_add_and_fetch(&aggr_tbl[glb_hash].sum,
+                        cache[agg_hash].sum);
+                    __sync_add_and_fetch(&aggr_tbl[glb_hash].count,
+                        cache[agg_hash].count);
+
+                    // overwrite local cache entry
                     cache[agg_hash].key = agg_key;
+                    cache[agg_hash].sum = value;
+                    cache[agg_hash].count = 1;
                 }
-
-                // update in thread local cache
-                cache[agg_hash].sum += value;
-                cache[agg_hash].count += 1;
-
-                // flush cache if full
-                if (fill == entries)
-                    flush_cache(cache, &fill, entries, estimate, log_estimate);
-
                 break; // out of outer table probing
             }
             // go to next bucket (linear probing)

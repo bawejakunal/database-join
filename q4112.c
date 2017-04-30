@@ -186,7 +186,7 @@ void update_aggregates(const bucket_t *table,
     const int8_t log_estimate,
     const uint32_t* outer_vals) {
 
-    size_t o, h, agg_hash, glb_hash;
+    size_t o, h, i, agg_hash, glb_hash;
     uint32_t key, agg_key, cache_key;
     uint32_t estimate = 1 << log_estimate;
     uint64_t value;
@@ -215,36 +215,37 @@ void update_aggregates(const bucket_t *table,
                 agg_hash = (uint32_t)(agg_key * HASH_FACTOR);
                 agg_hash >>= 32 - log_entries;
 
-                // if cache is full flush the slot
+                // if cache is full flush a slot
                 if (fill == entries) {
-                    cache_key = cache[agg_hash].key;
-                    glb_hash = (uint32_t)(cache_key * HASH_FACTOR);
-                    glb_hash >>= 32 - log_estimate;
+                    i = 0;
+                    while(cache[agg_hash].key != agg_key && i < entries){
+                        agg_hash = (agg_hash + 1) & (entries - 1);
+                        i++;
+                    }
 
-                    flush_item(cache[agg_hash], log_entries, entries,
-                        estimate);
-
-                    // overwrite local cache entry
-                    cache[agg_hash].key = agg_key;
-                    cache[agg_hash].sum = value;
-                    cache[agg_hash].count = 1;
+                    // key not found in cache
+                    // remove the current key
+                    if (i == entries) {
+                        flush_item(cache[agg_hash], log_entries, entries,
+                            estimate);
+                        cache[agg_hash].key = 0;
+                        cache[agg_hash].sum = 0;
+                        cache[agg_hash].count = 0;
+                    }
                 }
 
                 // fit somewhere else in cache
-                else {
-                    while(!(cache[agg_hash].key == agg_key || 
-                        cache[agg_hash].key == 0))
-
+                while(!(cache[agg_hash].key == agg_key || 
+                    cache[agg_hash].key == 0))
                     agg_hash = (agg_hash + 1) & (entries - 1);
 
-                    if (!(cache[agg_hash].key == agg_key)) {
-                        cache[agg_hash].key = agg_key;
-                        fill += 1;
-                    }
-
-                    cache[agg_hash].sum += value;
-                    cache[agg_hash].count += 1;
+                if (!(cache[agg_hash].key == agg_key)) {
+                    cache[agg_hash].key = agg_key;
+                    fill += 1;
                 }
+
+                cache[agg_hash].sum += value;
+                cache[agg_hash].count += 1;
                 break; // out of outer table probing
             }
             // go to next bucket (linear probing)

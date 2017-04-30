@@ -141,24 +141,23 @@ void flush_item(const aggr_t item,
     const int8_t log_entries,
     const uint32_t entries,
     const uint32_t estimate){
-    uint32_t agg_hash, agg_key, prev;
+    uint32_t agg_hash, prev;
 
-    agg_key = item.key;
-    agg_hash = agg_key * HASH_FACTOR;
+    agg_hash = item.key * HASH_FACTOR;
     agg_hash >>= 32 - log_entries;
 
     // search for empty slot or matching key in global aggregate table
-    while(!(aggr_tbl[agg_hash].key == agg_key || aggr_tbl[agg_hash].key == 0))
+    while(!(aggr_tbl[agg_hash].key == item.key || aggr_tbl[agg_hash].key == 0))
         agg_hash = (agg_hash + 1) & (estimate - 1);
 
     // aggregation key did not match
     // linear probe the aggregate table for empty slot
-    if (!(aggr_tbl[agg_hash].key == agg_key)) {
+    if (!(aggr_tbl[agg_hash].key == item.key)) {
         do {
             prev = __sync_val_compare_and_swap(&aggr_tbl[agg_hash].key, 0,
-                    agg_key);
+                    item.key);
             // aggr_key write succeeds or clashes
-            if (prev == 0 || prev == agg_key)
+            if (prev == 0 || prev == item.key)
                 break; // out of do-while
             agg_hash = (agg_hash + 1) & (estimate - 1);
         }while(1);
@@ -189,8 +188,8 @@ void update_aggregates(const bucket_t *table,
     uint32_t estimate = 1 << log_estimate;
     uint64_t value;
     uint16_t fill = 0; // cache filled
-    const uint16_t entries = 128; //max entries
     const int8_t log_entries = 7;
+    const uint32_t entries = 1 << log_entries; // cache size
 
     // allocate local cache
     aggr_t *cache = (aggr_t*)calloc(entries, sizeof(aggr_t));
@@ -231,8 +230,12 @@ void update_aggregates(const bucket_t *table,
 
                 // flush cache if full
                 if (fill == entries) {
-                    for (i = 0; i < entries; ++i)
+                    for (i = 0; i < entries; ++i) {
                         flush_item(cache[i], log_entries, entries, estimate);
+			cache[i].key = 0;
+			cache[i].sum = 0;
+			cache[i].count = 0;
+		    }
                     fill = 0;
                 }
                 break; // out of outer table probing

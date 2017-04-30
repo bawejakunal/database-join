@@ -137,29 +137,26 @@ int inner_hash_table(bucket_t* table,
   return (end - begin);
 }
 
-// flush the item to global aggregate table
 void flush_item(const aggr_t item,
-    const int8_t log_entries,
-    const uint32_t entries,
-    const uint32_t estimate){
-    uint32_t agg_hash, agg_key, prev;
+    const int8_t log_estimate,
+    const uint32_t estimate) {
 
-    agg_key = item.key;
-    agg_hash = agg_key * HASH_FACTOR;
-    agg_hash >>= 32 - log_entries;
+    uint32_t agg_hash, prev;
+    agg_hash = item.key * HASH_FACTOR;
+    agg_hash >>= 32 - log_estimate;
 
     // search for empty slot or matching key in global aggregate table
-    while(!(aggr_tbl[agg_hash].key == agg_key || aggr_tbl[agg_hash].key == 0))
+    while(!(aggr_tbl[agg_hash].key == item.key || aggr_tbl[agg_hash].key == 0))
         agg_hash = (agg_hash + 1) & (estimate - 1);
 
     // aggregation key did not match
     // linear probe the aggregate table for empty slot
-    if (!(aggr_tbl[agg_hash].key == agg_key)) {
+    if (!(aggr_tbl[agg_hash].key == item.key)) {
         do {
             prev = __sync_val_compare_and_swap(&aggr_tbl[agg_hash].key, 0,
-                    agg_key);
+                    item.key);
             // aggr_key write succeeds or clashes
-            if (prev == 0 || prev == agg_key)
+            if (prev == 0 || prev == item.key)
                 break; // out of do-while
             agg_hash = (agg_hash + 1) & (estimate - 1);
         }while(1);
@@ -168,7 +165,6 @@ void flush_item(const aggr_t item,
     __sync_add_and_fetch(&aggr_tbl[agg_hash].count, item.count);
     return;
 }
-
 
 // Called on a portion of outer table
 // Compares primary key of outer relation record
@@ -186,13 +182,13 @@ void update_aggregates(const bucket_t *table,
     const int8_t log_estimate,
     const uint32_t* outer_vals) {
 
-    size_t o, h, i, agg_hash, glb_hash;
-    uint32_t key, agg_key, cache_key;
+    size_t o, h, i, agg_hash;
+    uint32_t key, agg_key;
     uint32_t estimate = 1 << log_estimate;
     uint64_t value;
-    uint16_t fill = 0;
-    const uint16_t entries = 128; //max entries
+    uint16_t fill = 0; // cache filled
     const int8_t log_entries = 7;
+    const uint32_t entries = 1 << log_entries; // cache size
 
     // allocate local cache
     aggr_t *cache = (aggr_t*)calloc(entries, sizeof(aggr_t));
@@ -215,25 +211,29 @@ void update_aggregates(const bucket_t *table,
                 agg_hash = (uint32_t)(agg_key * HASH_FACTOR);
                 agg_hash >>= 32 - log_entries;
 
-                // if cache is full flush completely
-                if (fill == entries) {
-                    for(i=0; i<entries; i++)
-                        flush_item(cache[i], log_entries, entries, estimate);
-                    fill = 0;
-                }
-
-                // write entry to cache
-                while(!(cache[agg_hash].key == agg_key || 
-                    cache[agg_hash].key == 0))
+                // probe cache
+                while(!(cache[agg_hash].key == agg_key ||
+                    cache[agg_hash].key == 0)) {
                     agg_hash = (agg_hash + 1) & (entries - 1);
-
-                if (cache[agg_hash].key == 0) {
-                    cache[agg_hash].key = agg_key;
-                    fill += 1;
                 }
 
+                // create new entry in cache if not present
+                if (cache[agg_hash].key == 0) {
+                    fill += 1;
+                    cache[agg_hash].key = agg_key;
+                }
+
+                // update in thread local cache
                 cache[agg_hash].sum += value;
                 cache[agg_hash].count += 1;
+
+                // flush cache if full
+                if (fill == entries) {
+                    for (i = 0; i < entries; ++i)
+                        flush_item(cache[i], log_estimate, estimate);
+                    memset(cache, 0, entries*sizeof(aggr_t));
+                    fill = 0;
+                }
                 break; // out of outer table probing
             }
             // go to next bucket (linear probing)
@@ -241,10 +241,9 @@ void update_aggregates(const bucket_t *table,
         }
     }
 
-    // flush residual entries from cache
-    for (o = 0; o < entries; o++) {
-        if (cache[o].count > 0)
-            flush_item(cache[o], log_entries, entries, estimate);
+    for (i = 0; i < entries; ++i) {
+        if (cache[i].count > 0)
+            flush_item(cache[i], log_estimate, estimate);
     }
     free(cache);
     return;
@@ -259,7 +258,7 @@ result_t partial_result(const size_t thread, const size_t threads,
     result_t result = {0, 0};
 
     // thread boundaries for outer table
-    size_t beg = (estimate / threads) * thread;
+    size_t beg = (estimate / threads) * (thread + 0);
     size_t end = (estimate / threads) * (thread + 1);
 
     // handle last thread boundary

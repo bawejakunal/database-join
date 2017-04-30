@@ -211,28 +211,25 @@ void update_aggregates(const bucket_t *table,
                 agg_hash = (uint32_t)(agg_key * HASH_FACTOR);
                 agg_hash >>= 32 - log_entries;
 
-                // probe cache
-                while(!(cache[agg_hash].key == agg_key ||
-                    cache[agg_hash].key == 0)) {
-                    agg_hash = (agg_hash + 1) & (entries - 1);
+                // cache hit
+                if (cache[agg_hash].key == agg_key) {
+                    cache[agg_hash].sum += value;
+                    cache[agg_hash].count += 1;                    
                 }
 
-                // create new entry in cache if not present
-                if (cache[agg_hash].key == 0) {
-                    fill += 1;
+                // new entry
+                else if (cache[agg_hash].key == 0) {
                     cache[agg_hash].key = agg_key;
+                    cache[agg_hash].sum = value;
+                    cache[agg_hash].count = 1;
                 }
 
-                // update in thread local cache
-                cache[agg_hash].sum += value;
-                cache[agg_hash].count += 1;
-
-                // flush cache if full
-                if (fill == entries) {
-                    for (i = 0; i < entries; ++i)
-                        flush_item(cache[i], log_estimate, estimate);
-                    memset(cache, 0, entries*sizeof(aggr_t));
-                    fill = 0;
+                // cache miss flush the current item
+                else {
+                    flush_item(cache[agg_hash], log_estimate, estimate);
+                    cache[agg_hash].key = agg_key;
+                    cache[agg_hash].sum = value;
+                    cache[agg_hash].count = 1;
                 }
                 break; // out of outer table probing
             }

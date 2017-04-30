@@ -230,12 +230,9 @@ void update_aggregates(const bucket_t *table,
 
                 // flush cache if full
                 if (fill == entries) {
-                    for (i = 0; i < entries; ++i) {
+                    for (i = 0; i < entries; ++i)
                         flush_item(cache[i], log_entries, entries, estimate);
-			cache[i].key = 0;
-			cache[i].sum = 0;
-			cache[i].count = 0;
-		    }
+                    memset(cache, 0, entries*sizeof(aggr_t));
                     fill = 0;
                 }
                 break; // out of outer table probing

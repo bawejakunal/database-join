@@ -215,31 +215,19 @@ void update_aggregates(const bucket_t *table,
                 agg_hash = (uint32_t)(agg_key * HASH_FACTOR);
                 agg_hash >>= 32 - log_entries;
 
-                // if cache is full flush a slot
+                // if cache is full flush completely
                 if (fill == entries) {
-                    i = 0;
-                    while(cache[agg_hash].key != agg_key && i < entries){
-                        agg_hash = (agg_hash + 1) & (entries - 1);
-                        i++;
-                    }
-
-                    // key not found in cache
-                    // remove the current key
-                    if (i == entries) {
-                        flush_item(cache[agg_hash], log_entries, entries,
-                            estimate);
-                        cache[agg_hash].key = 0;
-                        cache[agg_hash].sum = 0;
-                        cache[agg_hash].count = 0;
-                    }
+                    for(i=0; i<entries; i++)
+			flush_item(cache[i], log_entries, entries, estimate);
+		    fill = 0;
                 }
 
-                // fit somewhere else in cache
+                // write entry to cache
                 while(!(cache[agg_hash].key == agg_key || 
                     cache[agg_hash].key == 0))
                     agg_hash = (agg_hash + 1) & (entries - 1);
 
-                if (!(cache[agg_hash].key == agg_key)) {
+                if (cache[agg_hash].key == 0) {
                     cache[agg_hash].key = agg_key;
                     fill += 1;
                 }

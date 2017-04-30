@@ -190,8 +190,9 @@ void update_aggregates(const bucket_t *table,
     uint32_t key, agg_key, cache_key;
     uint32_t estimate = 1 << log_estimate;
     uint64_t value;
-    const uint16_t entries = 256; //max entries
-    const int8_t log_entries = 8;
+    uint16_t fill = 0;
+    const uint16_t entries = 128; //max entries
+    const int8_t log_entries = 7;
 
     // allocate local cache
     aggr_t *cache = (aggr_t*)calloc(entries, sizeof(aggr_t));
@@ -214,21 +215,8 @@ void update_aggregates(const bucket_t *table,
                 agg_hash = (uint32_t)(agg_key * HASH_FACTOR);
                 agg_hash >>= 32 - log_entries;
 
-                // cache hit, increment values
-                if (cache[agg_hash].key == agg_key) {
-                    cache[agg_hash].sum += value;
-                    cache[agg_hash].count += 1;
-                }
-
-                // empty slot, write first time
-                else if(cache[agg_hash].key == 0) {
-                    cache[agg_hash].key = agg_key;
-                    cache[agg_hash].sum = value;
-                    cache[agg_hash].count = 1;
-                }
-
-                // cache miss, flush the slot
-                else {
+                // if cache is full flush the slot
+                if (fill == entries) {
                     cache_key = cache[agg_hash].key;
                     glb_hash = (uint32_t)(cache_key * HASH_FACTOR);
                     glb_hash >>= 32 - log_estimate;
@@ -240,6 +228,22 @@ void update_aggregates(const bucket_t *table,
                     cache[agg_hash].key = agg_key;
                     cache[agg_hash].sum = value;
                     cache[agg_hash].count = 1;
+                }
+
+                // fit somewhere else in cache
+                else {
+                    while(!(cache[agg_hash].key == agg_key || 
+                        cache[agg_hash].key == 0))
+
+                    agg_hash = (agg_hash + 1) & (entries - 1);
+
+                    if (!(cache[agg_hash].key == agg_key)) {
+                        cache[agg_hash].key = agg_key;
+                        fill += 1;
+                    }
+
+                    cache[agg_hash].sum += value;
+                    cache[agg_hash].count += 1;
                 }
                 break; // out of outer table probing
             }

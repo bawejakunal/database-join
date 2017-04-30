@@ -182,8 +182,8 @@ void update_aggregates(const bucket_t *table,
         	// aggregation key did not match 
         	if (!(aggr_tbl[agg_hash].key == agg_key)) {
             	    do {
-                        prev = __sync_val_compare_and_swap(&aggr_tbl[agg_hash].key, 0,
-                        	agg_key);
+                        prev = __sync_val_compare_and_swap(
+                            &aggr_tbl[agg_hash].key, 0, agg_key);
                 	// aggr_key write succeeds or clashes
                 	if (prev == 0 || prev == agg_key)
                     		break; // out of do-while

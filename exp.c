@@ -211,25 +211,43 @@ void update_aggregates(const bucket_t *table,
                 agg_hash = (uint32_t)(agg_key * HASH_FACTOR);
                 agg_hash >>= 32 - log_entries;
 
-                // cache hit
+                // if cache is full
+                if (fill == entries)
+                {
+                    // scan for availability
+                    i = 0;
+                    while(!(cache[agg_hash].key == agg_key || i >= entries)) {
+                        agg_hash = (agg_hash + 1) & (entries - 1);
+                        i++;
+                    }
+
+                    // flush the current item if no slot matches or available
+                    if (i == entries) {
+                        flush_item(cache[agg_hash], log_estimate, estimate);
+                        cache[agg_hash].key = 0;
+                        cache[agg_hash].sum = 0;
+                        cache[agg_hash].count = 0;
+                        fill -= 1;
+                    }
+                }
+
+                // probe cache for matching slot
+                while (!(cache[agg_hash].key == agg_key ||
+                    cache[agg_hash].key == 0))
+                    agg_hash = (agg_hash + 1) & (entries - 1);
+
+                // if cache hit after probing
                 if (cache[agg_hash].key == agg_key) {
                     cache[agg_hash].sum += value;
-                    cache[agg_hash].count += 1;                    
+                    cache[agg_hash].count += 1;
                 }
 
-                // new entry
-                else if (cache[agg_hash].key == 0) {
-                    cache[agg_hash].key = agg_key;
-                    cache[agg_hash].sum = value;
-                    cache[agg_hash].count = 1;
-                }
-
-                // cache miss flush the current item
+                // found a empty slot
                 else {
-                    flush_item(cache[agg_hash], log_estimate, estimate);
                     cache[agg_hash].key = agg_key;
                     cache[agg_hash].sum = value;
                     cache[agg_hash].count = 1;
+                    fill += 1;
                 }
                 break; // out of outer table probing
             }

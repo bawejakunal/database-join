@@ -138,13 +138,12 @@ int inner_hash_table(bucket_t* table,
 }
 
 void flush_item(const aggr_t item,
-    const int8_t log_entries,
-    const uint32_t entries,
-    const uint32_t estimate){
-    uint32_t agg_hash, prev;
+    const int8_t log_estimate,
+    const uint32_t estimate) {
 
+    uint32_t agg_hash, prev;
     agg_hash = item.key * HASH_FACTOR;
-    agg_hash >>= 32 - log_entries;
+    agg_hash >>= 32 - log_estimate;
 
     // search for empty slot or matching key in global aggregate table
     while(!(aggr_tbl[agg_hash].key == item.key || aggr_tbl[agg_hash].key == 0))
@@ -231,7 +230,7 @@ void update_aggregates(const bucket_t *table,
                 // flush cache if full
                 if (fill == entries) {
                     for (i = 0; i < entries; ++i)
-                        flush_item(cache[i], log_entries, entries, estimate);
+                        flush_item(cache[i], log_estimate, estimate);
                     memset(cache, 0, entries*sizeof(aggr_t));
                     fill = 0;
                 }
@@ -244,7 +243,7 @@ void update_aggregates(const bucket_t *table,
 
     for (i = 0; i < entries; ++i) {
         if (cache[i].count > 0)
-            flush_item(cache[i], log_entries, entries, estimate);
+            flush_item(cache[i], log_estimate, estimate);
     }
     free(cache);
     return;

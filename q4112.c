@@ -186,7 +186,6 @@ void update_aggregates(const bucket_t *table,
     uint32_t key, agg_key;
     uint32_t estimate = 1 << log_estimate;
     uint64_t value;
-    uint16_t fill = 0; // cache filled
     const int8_t log_entries = 7;
     const uint32_t entries = 1 << log_entries; // cache size
 

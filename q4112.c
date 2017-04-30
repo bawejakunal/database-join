@@ -218,8 +218,8 @@ void update_aggregates(const bucket_t *table,
                 // if cache is full flush completely
                 if (fill == entries) {
                     for(i=0; i<entries; i++)
-			flush_item(cache[i], log_entries, entries, estimate);
-		    fill = 0;
+                        flush_item(cache[i], log_entries, entries, estimate);
+                    fill = 0;
                 }
 
                 // write entry to cache

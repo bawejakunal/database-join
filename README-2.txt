@@ -5,6 +5,10 @@ COMS W4112 Database Systems Implementation
 Project - 2, Part - 2 (with Bonus Part)
 
 Detailed comments in q4112.c
+Readings in q4112.csv
+
+Extra runs with 2^10 and 2^15 thread local
+cache sizes in `extra` folder
 ==========================================
 
 Experimental Setup:

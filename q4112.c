@@ -484,8 +484,6 @@ uint64_t q4112_run(
     int8_t log_partitions = 12; // optimized for 16KB L1 cache
     uint32_t partitions = 1 << log_partitions;
 
-    printf("%lu\n", sizeof(aggr_t));
-
     // number of buckets for hash table
     int8_t log_buckets = 1;
     size_t buckets = 2;

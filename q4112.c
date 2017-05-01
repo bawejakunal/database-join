@@ -3,6 +3,8 @@
  * UNI: kb2896
  * NAME: Kunal Baweja
  * COMS W4112 Database Systems Implementation
+ *
+ * Project 2 - Part 2 (Bonus implemented)
  **/
 
 #include <assert.h>
@@ -16,9 +18,12 @@
 
 // Knuth factor
 static const uint64_t HASH_FACTOR = 0x9e3779b1;
+
+// Phi constant for Flajolet-Martin Estimation
 static const float  PHI = 0.77351;
 
-// hash bucket struct
+// hash bucket struct for inner hash join on
+// products by product id (key)
 typedef struct {
   uint32_t key;
   uint32_t val;
@@ -43,22 +48,28 @@ typedef struct {
     bucket_t* table;
     // thread barrier
     pthread_barrier_t *barrier;
+
     // Flajolet-Martin estimation values
     uint32_t **bitmaps;
     int8_t log_partitions;
     int8_t *log_estimate;
-    // partial results
+
+    // partial results returned by each thread
     uint64_t avg;
     uint32_t count;
 } q4112_run_info_t;
 
-// merged result struct
+// each thread computes a partial result on a portion of aggregate
+// table using partial_result() function which returns the
+// partial computed result in following struct to calling thread
 typedef struct {
     uint64_t avg;
     uint32_t count;
 } result_t;
 
-// global aggregate table struct
+// global aggregate table entry struct
+// each entry in the global aggregate table consists of three
+// parts mentioned below
 typedef struct
 {
     uint32_t key;   // aggregate key
@@ -66,12 +77,15 @@ typedef struct
     uint32_t count; // aggregate count
 } aggr_t;
 
-// pointer to global aggregate table
-// shared across threads
+// pointer to global aggregate table shared across threads. The size is
+// estimated in parallel using Flajolet-Martin algorithm and consequently
+// one of the threads allocates memory equal to the estimated size of table
+// based on the estimate for unique aggregation keys for outer table
 aggr_t *aggr_tbl;
 
 
-// count trailing zeroes in binary representation
+// count trailing zeroes in binary representation of 'value'
+// helper function, used in _estimate
 uint32_t count_trailing_zeros(uint32_t value){
     uint32_t count = 32;
     value &= -value;
@@ -84,7 +98,11 @@ uint32_t count_trailing_zeros(uint32_t value){
     return count;
 }
 
-// estimate the number of unique group by keys from outer table
+// estimate the number of unique aggregation keys from outer table
+// This function is called by each of the participating threads
+// Each thread fills up it's own portion of bitmaps and the last thread
+// to synchronize combines them all to obtain the final estimate and
+// allocate aggregation table memory based on the estimate
 void _estimate(uint32_t *bitmaps, const int8_t log_partitions, 
     const uint32_t* keys, size_t size) {
     size_t h, i, p;
@@ -99,8 +117,12 @@ void _estimate(uint32_t *bitmaps, const int8_t log_partitions,
     return;
 }
 
-
-// fills given hash table
+// Build the inner hash table in parallel across threads.
+// Each thread works on a portion of the inner table to compute a specific
+// independent portion of the inner hash table that contains product id as 
+// key and product price as value of each bucket in the hash table.
+// In this implementation using multiplicative hashing, each bucket stores
+// exactly one product item (from inner table of the query)
 int inner_hash_table(bucket_t* table,
     const size_t begin,
     const size_t end,
@@ -137,9 +159,18 @@ int inner_hash_table(bucket_t* table,
   return (end - begin);
 }
 
+
+// A thread calls `flush_item` to update aggregate sum and count
+// of the entry corresponding to `item.key` in global aggregate table
+// Threads call this function in case of hash collision when trying to
+// insert a new entry in the thread local hash table(cache) or when
+// the thread has finished probing the outer table and wants to flush
+// all the entries in thread local cache before returning from
+// `update_aggregates` 
 void flush_item(const aggr_t item,
     const int8_t log_estimate,
     const uint32_t estimate) {
+    // Helper function to update global aggregate table, aggr_tbl.
 
     uint32_t agg_hash, prev;
     agg_hash = item.key * HASH_FACTOR;
@@ -161,17 +192,20 @@ void flush_item(const aggr_t item,
             agg_hash = (agg_hash + 1) & (estimate - 1);
         }while(1);
     }
+
+    // update aggregate sum and count atomically
     __sync_add_and_fetch(&aggr_tbl[agg_hash].sum, item.sum);
     __sync_add_and_fetch(&aggr_tbl[agg_hash].count, item.count);
     return;
 }
 
-// Called on a portion of outer table
-// Compares primary key of outer relation record
-// with records inserted in hash table based on
-// the multiplicative hash computed
-// Returns partial result as result_t
-// each query thread calls this method
+// This function is called within each thread to probe a portion of the
+// outer table and update aggregate sum and count for each aggregation
+// key in the global aggregation table.
+// Threads maintain a thread local hash table as `cache` wherein they store
+// the intermediate aggregates rather than directly updating the global
+// aggregate table. This is done to avoid contention among threads for
+// updating small number of entries in global aggregate table.
 void update_aggregates(const bucket_t *table,
     const int8_t log_buckets,
     const size_t buckets,
@@ -186,57 +220,79 @@ void update_aggregates(const bucket_t *table,
     uint32_t key, agg_key;
     uint32_t estimate = 1 << log_estimate;
     uint64_t value;
-    const int8_t log_entries = 15;
-    const uint32_t entries = 1 << log_entries; // cache size
 
-    // allocate local cache
+    // Number of entries in the thread local hash table/cache
+    // This table contains 2^15 entries of 24 bytes each (size of agg_t)
+    // which can fit into the L1d private cache for each thread and 
+    // and L2 cache shared among all cores. Reached this number by
+    // empirical measurements
+    const int8_t log_entries = 15;
+    const uint32_t entries = 1 << log_entries; // thread local cache size
+
+    // allocate local cache (local hash table)
+    // Direct-mapping cache mechanism used here
     aggr_t *cache = (aggr_t*)calloc(entries, sizeof(aggr_t));
     assert(cache != NULL);
 
-    //  probe outer table using hash table
-    //  outer_beg to outer_end - 1
+    // probe outer table using the inner hash table to compute each order's
+    // value. Indices from outer_beg to outer_end - 1
     for (o = outer_beg; o < outer_end; ++o) {
         key = outer_keys[o];
         //  multiplicative hashing
         h = (uint32_t) (key * HASH_FACTOR);
         h >>= 32 - log_buckets;
 
-        //  search for matching bucket
+        // search for matching bucket in inner hash table
         while (table[h].key != 0) {
-            //  product.id == order.product_id
+            //  product.id == order.product_id for corresponding product price
             if (table[h].key == key) {
                 value = (uint64_t)table[h].val * outer_vals[o];
+
+                // compute hash of order's aggregation key i.e store id
+                // from the outer table entry for the current order
+                // to locate it within the thread local cache(hash table)
+                // or create a new entry in the cache table
                 agg_key = outer_aggr_keys[o];
                 agg_hash = (uint32_t)(agg_key * HASH_FACTOR);
                 agg_hash >>= 32 - log_entries;
 
-                // cache hit
+                // in case of cache hit update sum and count in local
+                // table
                 if (cache[agg_hash].key == agg_key) {
                     cache[agg_hash].sum += value;
                     cache[agg_hash].count += 1;                    
                 }
 
-                // new entry
+                // if an empty slot is found create a new entry
                 else if (cache[agg_hash].key == 0) {
                     cache[agg_hash].key = agg_key;
                     cache[agg_hash].sum = value;
                     cache[agg_hash].count = 1;
                 }
 
-                // cache miss flush the current item
+                // If cache miss then flush the current item occupying the
+                // slot in local cache table to global aggregate table and
+                // overwrite with the new item's value, key and count = 1
+                // This is the same mechanism as a direct-mapping cache
                 else {
+                    // flush the current cache entry at `agg_hash` to global
+                    // aggregate table
                     flush_item(cache[agg_hash], log_estimate, estimate);
+
+                    // overwrite the current entry in local hash table
                     cache[agg_hash].key = agg_key;
                     cache[agg_hash].sum = value;
                     cache[agg_hash].count = 1;
                 }
-                break; // out of outer table probing
+                break; // order matches a product, stop probing hash table 
             }
-            // go to next bucket (linear probing)
+            // go to next bucket in hash table if no match found for order
+            // (linear probing)
             h = (h + 1) & (buckets - 1);
         }
     }
 
+    // flush out the remaining entries from thread local cache
     for (i = 0; i < entries; ++i) {
         if (cache[i].count > 0)
             flush_item(cache[i], log_estimate, estimate);
@@ -245,7 +301,11 @@ void update_aggregates(const bucket_t *table,
     return;
 }
 
-// merge results from aggregate table
+// Computer partial result by iterating over a portion of the global
+// aggregation table. Each thread computes this partial result over
+// an equal partition of the global aggregate table and returns it
+// in thread info struct, later the joining thread merges all the
+// partial results returned by threads to compute final query result
 result_t partial_result(const size_t thread, const size_t threads,
     const int8_t log_estimate){
 
@@ -261,7 +321,8 @@ result_t partial_result(const size_t thread, const size_t threads,
     if (thread + 1 == threads)
         end = estimate;
 
-    // iterate over portion of aggregate table
+    // iterate over portion of aggregate table and compute partial averages
+    // and counts of aggregate keys iterated over
     for(i = beg; i < end; i++){
         if (aggr_tbl[i].count > 0){
             result.avg += aggr_tbl[i].sum / aggr_tbl[i].count;
@@ -271,14 +332,18 @@ result_t partial_result(const size_t thread, const size_t threads,
     return result;
 }
 
-// allocate memory to aggregate table
+// Merge the bitmaps computed by each participating thread for
+// Flajolet-Martin estimation of unique aggregation keys, compute
+// the final estimate and allocate memory to global aggregation table
 int8_t alloc_aggr_tbl(const size_t threads, const size_t thread, 
-    const uint32_t partitions, uint32_t **bitmaps){
+    const uint32_t partitions, uint32_t **bitmaps) {
+
     uint32_t i, j, estimate = 0;
     int8_t log_estimate = 0;
+
     // merge other bitmaps into current thread's bitmaps
     for (i = 0; i < threads; i++){
-        // already present current thread's bitmaps
+        // skip current thread's bitmaps
         if (i == thread)
             continue;
         for (j = 0; j < partitions; j++)
@@ -293,14 +358,18 @@ int8_t alloc_aggr_tbl(const size_t threads, const size_t thread,
     // check for power of 2
     if (!(estimate & (estimate - 1)))
         log_estimate = count_trailing_zeros(estimate);
+
+    // make the estimate equal to next value which is a perfect power
+    // of 2 for easy hash computation. In worst case the estimation
+    // can be upto 2X of actual number of keys but this does not affects
+    // the performance
     else{
-        // approximate log
+        // approximate log base 2
         while (estimate > 1){
             log_estimate += 1;
             estimate >>= 1;
         }
-        // overestimate a little
-        // avoid small sized aggregation table
+        // overestimate a little to avoid small sized aggregation table
         log_estimate += 1;
     }
 
@@ -310,7 +379,7 @@ int8_t alloc_aggr_tbl(const size_t threads, const size_t thread,
     return log_estimate;
 }
 
-// run each thread
+// run each thread using the thread info passed
 void* q4112_run_thread(void* arg) {
     q4112_run_info_t* info = (q4112_run_info_t*) arg;
     assert(pthread_equal(pthread_self(), info->id));
@@ -359,37 +428,45 @@ void* q4112_run_thread(void* arg) {
     _estimate(bitmaps[thread], log_partitions, 
         (outer_aggr_keys + outer_beg), (outer_end - outer_beg));
 
-    // synchronize participating threads for collecting estimates
+    // synchronize participating threads for merging bitmaps and 
+    // collecting estimates
     ret = pthread_barrier_wait(barrier);
     assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
 
-    // last thread does this
+    // last thread merges the bitmaps, makes estimate and allocates memory
     if (ret == PTHREAD_BARRIER_SERIAL_THREAD)
         *log_estimate = alloc_aggr_tbl(threads, thread, partitions, bitmaps);
 
-    // synchronize participating threads for aggergate table allocation
+    // synchronize participating threads for memory allocation before computing
+    // inner hash table, partial aggregates and updating aggregate table
     ret = pthread_barrier_wait(barrier);
     assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
 
-    // insert to hash table
+    // insert tuples of inner table(small) into hash table
     inner_hash_table(table, inner_beg, inner_end, inner_keys,
         inner_vals, log_buckets, buckets);
 
-    // synchronize threads before aggregation
+    // synchronize threads before updating aggregation table by reading
+    // a consistent inner hash table and probing a portion of outer table
     ret = pthread_barrier_wait(barrier);
     assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
 
+    // compute partial aggregates in thread local hash tables/cache and update
+    // fill global aggregate table
     update_aggregates(table, log_buckets, buckets, outer_beg, outer_end,
         outer_keys, outer_aggr_keys, *log_estimate, outer_vals);
 
-    // synchronize to merge results
+    // synchronize to compute partial results by probing aggregation table
     ret = pthread_barrier_wait(barrier);
     assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
 
+    // compute partial averages and counts of aggregation keys
     result = partial_result(thread, threads, *log_estimate);
+
     // extract query result in thread info
     info->avg = result.avg;
     info->count = result.count;
+
     pthread_exit(NULL);
 }
 

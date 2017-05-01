@@ -73,8 +73,8 @@ typedef struct {
 typedef struct
 {
     uint32_t key;   // aggregate key
-    uint64_t sum;   // aggregate sum
     uint32_t count; // aggregate count
+    uint64_t sum;   // aggregate sum
 } aggr_t;
 
 // pointer to global aggregate table shared across threads. The size is
@@ -226,7 +226,7 @@ void update_aggregates(const bucket_t *table,
     // which can fit into the L1d private cache for each thread and 
     // and L2 cache shared among all cores. Reached this number by
     // empirical measurements
-    const int8_t log_entries = 10;
+    const int8_t log_entries = 12;
     const uint32_t entries = 1 << log_entries; // thread local cache size
 
     // allocate local cache (local hash table)
@@ -483,6 +483,8 @@ uint64_t q4112_run(
     int8_t ret;
     int8_t log_partitions = 12; // optimized for 16KB L1 cache
     uint32_t partitions = 1 << log_partitions;
+
+    printf("%lu\n", sizeof(aggr_t));
 
     // number of buckets for hash table
     int8_t log_buckets = 1;

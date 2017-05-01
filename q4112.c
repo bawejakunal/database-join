@@ -226,7 +226,7 @@ void update_aggregates(const bucket_t *table,
     // which can fit into the L1d private cache for each thread and 
     // and L2 cache shared among all cores. Reached this number by
     // empirical measurements
-    const int8_t log_entries = 15;
+    const int8_t log_entries = 10;
     const uint32_t entries = 1 << log_entries; // thread local cache size
 
     // allocate local cache (local hash table)

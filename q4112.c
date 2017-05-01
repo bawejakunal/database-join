@@ -70,11 +70,10 @@ typedef struct {
 // global aggregate table entry struct
 // each entry in the global aggregate table consists of three
 // parts mentioned below
-typedef struct
-{
-    uint32_t key;   // aggregate key
-    uint32_t count; // aggregate count
-    uint64_t sum;   // aggregate sum
+typedef struct {
+    uint32_t key;    // aggregate key
+    uint32_t count;  // aggregate count
+    uint64_t sum;    // aggregate sum
 } aggr_t;
 
 // pointer to global aggregate table shared across threads. The size is
@@ -86,7 +85,7 @@ aggr_t *aggr_tbl;
 
 // count trailing zeroes in binary representation of 'value'
 // helper function, used in _estimate
-uint32_t count_trailing_zeros(uint32_t value){
+uint32_t count_trailing_zeros(uint32_t value) {
     uint32_t count = 32;
     value &= -value;
     if (value) count--;
@@ -103,7 +102,7 @@ uint32_t count_trailing_zeros(uint32_t value){
 // Each thread fills up it's own portion of bitmaps and the last thread
 // to synchronize combines them all to obtain the final estimate and
 // allocate aggregation table memory based on the estimate
-void _estimate(uint32_t *bitmaps, const int8_t log_partitions, 
+void _estimate(uint32_t *bitmaps, const int8_t log_partitions,
     const uint32_t* keys, size_t size) {
     size_t h, i, p;
     size_t partitions = 1 << log_partitions;
@@ -119,7 +118,7 @@ void _estimate(uint32_t *bitmaps, const int8_t log_partitions,
 
 // Build the inner hash table in parallel across threads.
 // Each thread works on a portion of the inner table to compute a specific
-// independent portion of the inner hash table that contains product id as 
+// independent portion of the inner hash table that contains product id as
 // key and product price as value of each bucket in the hash table.
 // In this implementation using multiplicative hashing, each bucket stores
 // exactly one product item (from inner table of the query)
@@ -166,7 +165,7 @@ int inner_hash_table(bucket_t* table,
 // insert a new entry in the thread local hash table(cache) or when
 // the thread has finished probing the outer table and wants to flush
 // all the entries in thread local cache before returning from
-// `update_aggregates` 
+// `update_aggregates`
 void flush_item(const aggr_t item,
     const int8_t log_estimate,
     const uint32_t estimate) {
@@ -177,8 +176,10 @@ void flush_item(const aggr_t item,
     agg_hash >>= 32 - log_estimate;
 
     // search for empty slot or matching key in global aggregate table
-    while(!(aggr_tbl[agg_hash].key == item.key || aggr_tbl[agg_hash].key == 0))
+    while (!(aggr_tbl[agg_hash].key == item.key ||
+        aggr_tbl[agg_hash].key == 0)) {
         agg_hash = (agg_hash + 1) & (estimate - 1);
+    }
 
     // aggregation key did not match
     // linear probe the aggregate table for empty slot
@@ -188,7 +189,7 @@ void flush_item(const aggr_t item,
                     item.key);
             // aggr_key write succeeds or clashes
             if (prev == 0 || prev == item.key)
-                break; // out of do-while
+                break;  // out of do-while
             agg_hash = (agg_hash + 1) & (estimate - 1);
         }while(1);
     }
@@ -222,12 +223,14 @@ void update_aggregates(const bucket_t *table,
     uint64_t value;
 
     // Number of entries in the thread local hash table/cache
-    // This table contains 2^15 entries of 24 bytes each (size of agg_t)
-    // which can fit into the L1d private cache for each thread and 
-    // and L2 cache shared among all cores. Reached this number by
-    // empirical measurements
+    // This table contains 2^13 entries of 16 bytes each (size of agg_t)
+    // which can fit into the L2 private cache for each thread.
+    // Reached this number by empirical measurements and a simple calculation
+    // that in hyperthreaded CLIC machine architecture each core has 256KB of
+    // L2 cache shared between 2 threads on a core, thus making 128kb of thread
+    // local hash table/cache for each thread.
     const int8_t log_entries = 13;
-    const uint32_t entries = 1 << log_entries; // thread local cache size
+    const uint32_t entries = 1 << log_entries;  // thread local cache size
 
     // allocate local cache (local hash table)
     // Direct-mapping cache mechanism used here
@@ -256,27 +259,22 @@ void update_aggregates(const bucket_t *table,
                 agg_hash = (uint32_t)(agg_key * HASH_FACTOR);
                 agg_hash >>= 32 - log_entries;
 
-                // in case of cache hit update sum and count in local
-                // table
                 if (cache[agg_hash].key == agg_key) {
+                    // cache hit, update sum and count in local table
                     cache[agg_hash].sum += value;
-                    cache[agg_hash].count += 1;                    
-                }
+                    cache[agg_hash].count += 1;
 
-                // if an empty slot is found create a new entry
-                else if (cache[agg_hash].key == 0) {
+                } else if (cache[agg_hash].key == 0) {
+                    // if an empty slot is found create a new entry
                     cache[agg_hash].key = agg_key;
                     cache[agg_hash].sum = value;
                     cache[agg_hash].count = 1;
-                }
 
-                // If cache miss then flush the current item occupying the
-                // slot in local cache table to global aggregate table and
-                // overwrite with the new item's value, key and count = 1
-                // This is the same mechanism as a direct-mapping cache
-                else {
-                    // flush the current cache entry at `agg_hash` to global
-                    // aggregate table
+                } else {
+                    // If cache miss then flush the current item occupying the
+                    // slot in local cache table to global aggregate table and
+                    // overwrite with the new item's value, key and count = 1
+                    // This is the same mechanism as a direct-mapping cache
                     flush_item(cache[agg_hash], log_estimate, estimate);
 
                     // overwrite the current entry in local hash table
@@ -284,7 +282,7 @@ void update_aggregates(const bucket_t *table,
                     cache[agg_hash].sum = value;
                     cache[agg_hash].count = 1;
                 }
-                break; // order matches a product, stop probing hash table 
+                break;  // order matches a product, stop probing hash table
             }
             // go to next bucket in hash table if no match found for order
             // (linear probing)
@@ -307,7 +305,7 @@ void update_aggregates(const bucket_t *table,
 // in thread info struct, later the joining thread merges all the
 // partial results returned by threads to compute final query result
 result_t partial_result(const size_t thread, const size_t threads,
-    const int8_t log_estimate){
+    const int8_t log_estimate) {
 
     uint32_t i;
     uint32_t estimate = 1 << log_estimate;
@@ -323,8 +321,8 @@ result_t partial_result(const size_t thread, const size_t threads,
 
     // iterate over portion of aggregate table and compute partial averages
     // and counts of aggregate keys iterated over
-    for(i = beg; i < end; i++){
-        if (aggr_tbl[i].count > 0){
+    for (i = beg; i < end; i++) {
+        if (aggr_tbl[i].count > 0) {
             result.avg += aggr_tbl[i].sum / aggr_tbl[i].count;
             result.count += 1;
         }
@@ -335,14 +333,14 @@ result_t partial_result(const size_t thread, const size_t threads,
 // Merge the bitmaps computed by each participating thread for
 // Flajolet-Martin estimation of unique aggregation keys, compute
 // the final estimate and allocate memory to global aggregation table
-int8_t alloc_aggr_tbl(const size_t threads, const size_t thread, 
+int8_t alloc_aggr_tbl(const size_t threads, const size_t thread,
     const uint32_t partitions, uint32_t **bitmaps) {
 
     uint32_t i, j, estimate = 0;
     int8_t log_estimate = 0;
 
     // merge other bitmaps into current thread's bitmaps
-    for (i = 0; i < threads; i++){
+    for (i = 0; i < threads; i++) {
         // skip current thread's bitmaps
         if (i == thread)
             continue;
@@ -356,16 +354,15 @@ int8_t alloc_aggr_tbl(const size_t threads, const size_t thread,
     estimate /= PHI;
 
     // check for power of 2
-    if (!(estimate & (estimate - 1)))
+    if (!(estimate & (estimate - 1))) {
         log_estimate = count_trailing_zeros(estimate);
-
-    // make the estimate equal to next value which is a perfect power
-    // of 2 for easy hash computation. In worst case the estimation
-    // can be upto 2X of actual number of keys but this does not affects
-    // the performance
-    else{
+    } else {
+        // make the estimate equal to next value which is a perfect power
+        // of 2 for easy hash computation. In worst case the estimation
+        // can be upto 2X of actual number of keys but this does not affects
+        // the performance
         // approximate log base 2
-        while (estimate > 1){
+        while (estimate > 1) {
             log_estimate += 1;
             estimate >>= 1;
         }
@@ -425,10 +422,10 @@ void* q4112_run_thread(void* arg) {
 
     // get estimate for thread's partition
     // number of log_partitions = number of threads
-    _estimate(bitmaps[thread], log_partitions, 
+    _estimate(bitmaps[thread], log_partitions,
         (outer_aggr_keys + outer_beg), (outer_end - outer_beg));
 
-    // synchronize participating threads for merging bitmaps and 
+    // synchronize participating threads for merging bitmaps and
     // collecting estimates
     ret = pthread_barrier_wait(barrier);
     assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
@@ -481,7 +478,7 @@ uint64_t q4112_run(
     int threads) {
 
     int8_t ret;
-    int8_t log_partitions = 12; // optimized for 16KB L1 cache
+    int8_t log_partitions = 12;  // optimized for 16KB L1 cache
     uint32_t partitions = 1 << log_partitions;
 
     // number of buckets for hash table
@@ -512,7 +509,7 @@ uint64_t q4112_run(
     assert(log_estimate != NULL);
 
     // create bitmap arrays
-    for (ret = 0; ret < threads; ret++){
+    for (ret = 0; ret < threads; ret++) {
         bitmaps[ret] = (uint32_t*)calloc(partitions, sizeof(uint32_t));
     }
 
@@ -546,7 +543,7 @@ uint64_t q4112_run(
         info[t].buckets = buckets;
         info[t].log_buckets = log_buckets;
         info[t].barrier = barrier;
-        //Flajolet-Martin estimates
+        // Flajolet-Martin estimates
         info[t].log_partitions = log_partitions;
         info[t].bitmaps = bitmaps;  // array of bitmaps
         info[t].log_estimate = log_estimate;

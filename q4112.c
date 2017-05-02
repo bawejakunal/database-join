@@ -29,6 +29,15 @@ typedef struct {
   uint32_t val;
 } bucket_t;
 
+// global aggregate table entry struct
+// each entry in the global aggregate table consists of three
+// parts mentioned below
+typedef struct {
+    uint32_t key;    // aggregate key
+    uint32_t count;  // aggregate count
+    uint64_t sum;    // aggregate sum
+} aggr_t;
+
 // thread info struct
 typedef struct {
     pthread_t id;
@@ -57,6 +66,9 @@ typedef struct {
     // partial results returned by each thread
     uint64_t avg;
     uint32_t count;
+
+    // global aggregate table double pointer
+    aggr_t **aggregate_table;
 } q4112_run_info_t;
 
 // each thread computes a partial result on a portion of aggregate
@@ -66,21 +78,6 @@ typedef struct {
     uint64_t avg;
     uint32_t count;
 } result_t;
-
-// global aggregate table entry struct
-// each entry in the global aggregate table consists of three
-// parts mentioned below
-typedef struct {
-    uint32_t key;    // aggregate key
-    uint32_t count;  // aggregate count
-    uint64_t sum;    // aggregate sum
-} aggr_t;
-
-// pointer to global aggregate table shared across threads. The size is
-// estimated in parallel using Flajolet-Martin algorithm and consequently
-// one of the threads allocates memory equal to the estimated size of table
-// based on the estimate for unique aggregation keys for outer table
-aggr_t *aggr_tbl;
 
 
 // count trailing zeroes in binary representation of 'value'
@@ -166,7 +163,8 @@ int inner_hash_table(bucket_t* table,
 // the thread has finished probing the outer table and wants to flush
 // all the entries in thread local cache before returning from
 // `update_aggregates`
-void flush_item(const aggr_t item,
+void flush_item(aggr_t *aggr_tbl,
+    const aggr_t item,
     const int8_t log_estimate,
     const uint32_t estimate) {
     // Helper function to update global aggregate table, aggr_tbl.
@@ -207,7 +205,8 @@ void flush_item(const aggr_t item,
 // the intermediate aggregates rather than directly updating the global
 // aggregate table. This is done to avoid contention among threads for
 // updating small number of entries in global aggregate table.
-void update_aggregates(const bucket_t *table,
+void update_aggregates(aggr_t *aggr_tbl, 
+    const bucket_t *table,
     const int8_t log_buckets,
     const size_t buckets,
     const size_t outer_beg,
@@ -275,7 +274,8 @@ void update_aggregates(const bucket_t *table,
                     // slot in local cache table to global aggregate table and
                     // overwrite with the new item's value, key and count = 1
                     // This is the same mechanism as a direct-mapping cache
-                    flush_item(cache[agg_hash], log_estimate, estimate);
+                    flush_item(aggr_tbl, cache[agg_hash], log_estimate,
+                        estimate);
 
                     // overwrite the current entry in local hash table
                     cache[agg_hash].key = agg_key;
@@ -293,7 +293,7 @@ void update_aggregates(const bucket_t *table,
     // flush out the remaining entries from thread local cache
     for (i = 0; i < entries; ++i) {
         if (cache[i].count > 0)
-            flush_item(cache[i], log_estimate, estimate);
+            flush_item(aggr_tbl, cache[i], log_estimate, estimate);
     }
     free(cache);
     return;
@@ -304,8 +304,8 @@ void update_aggregates(const bucket_t *table,
 // an equal partition of the global aggregate table and returns it
 // in thread info struct, later the joining thread merges all the
 // partial results returned by threads to compute final query result
-result_t partial_result(const size_t thread, const size_t threads,
-    const int8_t log_estimate) {
+result_t partial_result(aggr_t *aggr_tbl, const size_t thread,
+    const size_t threads, const int8_t log_estimate) {
 
     uint32_t i;
     uint32_t estimate = 1 << log_estimate;
@@ -333,8 +333,9 @@ result_t partial_result(const size_t thread, const size_t threads,
 // Merge the bitmaps computed by each participating thread for
 // Flajolet-Martin estimation of unique aggregation keys, compute
 // the final estimate and allocate memory to global aggregation table
-int8_t alloc_aggr_tbl(const size_t threads, const size_t thread,
-    const uint32_t partitions, uint32_t **bitmaps) {
+int8_t alloc_aggr_tbl(aggr_t *aggr_tbl, const size_t threads,
+    const size_t thread, const uint32_t partitions,
+    uint32_t **bitmaps) {
 
     uint32_t i, j, estimate = 0;
     int8_t log_estimate = 0;
@@ -382,6 +383,7 @@ void* q4112_run_thread(void* arg) {
     assert(pthread_equal(pthread_self(), info->id));
 
     int ret;
+    aggr_t *aggr_tbl; // memory allocation, store pointer here
     result_t result = {0, 0};
 
     //  copy info
@@ -402,6 +404,8 @@ void* q4112_run_thread(void* arg) {
     const int8_t log_partitions = info->log_partitions;
     const uint32_t partitions = 1 << log_partitions;
     int8_t *log_estimate = info->log_estimate;
+    // double pointer
+    aggr_t **aggregate_table = info->aggregate_table;
 
     // corresponding bitmaps for the thread
     uint32_t **bitmaps = info->bitmaps;
@@ -432,7 +436,7 @@ void* q4112_run_thread(void* arg) {
 
     // last thread merges the bitmaps, makes estimate and allocates memory
     if (ret == PTHREAD_BARRIER_SERIAL_THREAD)
-        *log_estimate = alloc_aggr_tbl(threads, thread, partitions, bitmaps);
+        *log_estimate = alloc_aggr_tbl(*aggregate_table, threads, thread, partitions, bitmaps);
 
     // synchronize participating threads for memory allocation before computing
     // inner hash table, partial aggregates and updating aggregate table
@@ -450,15 +454,16 @@ void* q4112_run_thread(void* arg) {
 
     // compute partial aggregates in thread local hash tables/cache and update
     // fill global aggregate table
-    update_aggregates(table, log_buckets, buckets, outer_beg, outer_end,
-        outer_keys, outer_aggr_keys, *log_estimate, outer_vals);
+    aggr_tbl = *aggregate_table;  // pass to each thread
+    update_aggregates(aggr_tbl, table, log_buckets, buckets, outer_beg,
+        outer_end, outer_keys, outer_aggr_keys, *log_estimate, outer_vals);
 
     // synchronize to compute partial results by probing aggregation table
     ret = pthread_barrier_wait(barrier);
     assert(ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD);
 
     // compute partial averages and counts of aggregation keys
-    result = partial_result(thread, threads, *log_estimate);
+    result = partial_result(aggr_tbl, thread, threads, *log_estimate);
 
     // extract query result in thread info
     info->avg = result.avg;
@@ -524,6 +529,10 @@ uint64_t q4112_run(
     bucket_t* table = (bucket_t*) calloc(buckets, sizeof(bucket_t));
     assert(table != NULL);
 
+    // allocate pointer to global aggregate table
+    aggr_t **aggregate_table = (aggr_t**)malloc(sizeof(aggr_t*));
+    assert(aggregate_table != NULL);
+
     // initialize thread barrier
     ret = pthread_barrier_init(barrier, NULL, threads);
     assert(ret == 0);
@@ -543,6 +552,7 @@ uint64_t q4112_run(
         info[t].buckets = buckets;
         info[t].log_buckets = log_buckets;
         info[t].barrier = barrier;
+        info[t].aggregate_table = aggregate_table;
         // Flajolet-Martin estimates
         info[t].log_partitions = log_partitions;
         info[t].bitmaps = bitmaps;  // array of bitmaps
@@ -568,7 +578,8 @@ uint64_t q4112_run(
     for (ret = 0; ret < threads; ret++)
         free(bitmaps[ret]);
     free(bitmaps);
-    free(aggr_tbl);
+    free(*aggregate_table);
+    free(aggregate_table);
     free(info);
     free(table);
 

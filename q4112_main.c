@@ -110,27 +110,26 @@ int main(int argc, char* argv[]) {
   //run configuration for multiple threads
   FILE *fp = fopen(res_file, "a");
   assert(fp != NULL);
-  int th, repeat;
-  for(th = 1; th <= threads; th <<= 1){
-    for (repeat = 1; repeat <= 5; repeat++){
-        // run join using specified number of threads
-        uint64_t run_ns = real_time();
-        uint64_t run_res = q4112_run(inner_keys, inner_vals, inner_tuples,
-              outer_join_keys, outer_aggr_keys, outer_vals, outer_tuples, th);
-        run_ns = real_time() - run_ns;
-        fprintf(stderr, "\n\nThreads used: %d\n", th);
-        fprintf(stderr, "Repeat: %d\n", repeat);
-        fprintf(stderr, "Query executed!\n");
-        fprintf(stderr, "Execution time:  %12s ns\n", add_commas(run_ns));
-        fprintf(stderr, "Query result: %llu\n", (unsigned long long) run_res);
-        // validate result
-        assert(gen_res == run_res);
-        fprintf(fp, "%zu,%.1f,%u,%zu,%.1lf,%u,%zu,%zu,%.1lf,%d,%d,%lu\n",
-            inner_tuples, inner_selectivity, inner_val_max, outer_tuples,
-            outer_selectivity, outer_val_max, groups, hh_groups,
-            hh_probability, th, repeat, run_ns);
-    }
-  }
+  int repeat;
+  for (repeat = 1; repeat <= 5; repeat++){
+      // run join using specified number of threads
+      uint64_t run_ns = real_time();
+      uint64_t run_res = q4112_run(inner_keys, inner_vals, inner_tuples,
+            outer_join_keys, outer_aggr_keys, outer_vals, outer_tuples,
+            threads);
+      run_ns = real_time() - run_ns;
+      fprintf(stderr, "\n\nThreads used: %d\n", threads);
+      fprintf(stderr, "Repeat: %d\n", repeat);
+      fprintf(stderr, "Query executed!\n");
+      fprintf(stderr, "Execution time:  %12s ns\n", add_commas(run_ns));
+      fprintf(stderr, "Query result: %llu\n", (unsigned long long) run_res);
+      // validate result
+      assert(gen_res == run_res);
+      fprintf(fp, "%zu,%.1f,%u,%zu,%.1lf,%u,%zu,%zu,%.1lf,%d,%d,%lu\n",
+          inner_tuples, inner_selectivity, inner_val_max, outer_tuples,
+          outer_selectivity, outer_val_max, groups, hh_groups,
+          hh_probability, threads, repeat, run_ns);
+}
 
   //cleanup memory
   fclose(fp);

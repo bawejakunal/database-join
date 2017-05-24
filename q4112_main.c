@@ -1,3 +1,11 @@
+/* Copyright 2017 Kunal Baweja
+ *
+ * UNI: kb2896
+ * NAME: Kunal Baweja
+ * COMS W4112 Database Systems Implementation
+ *
+ **/
+
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>

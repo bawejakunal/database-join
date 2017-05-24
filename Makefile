@@ -1,31 +1,27 @@
 CC = gcc
 CFLAGS = -O3 -Wall
+LIBS = -lpthread
 
-all:	exp q4112 q4112_hj q4112_nlj_1 q4112_nlj q4112_hj_1
+SRC=$(wildcard *.c)
 
-exp:	exp.o q4112_gen.o q4112_main.o
-	$(CC) $(CFLAGS) -o exp exp.o q4112_gen.o q4112_main.o -lpthread
+all:	q4112 q4112_hj q4112_nlj_1 q4112_nlj q4112_hj_1
 
 q4112:	q4112.o q4112_gen.o q4112_main.o
-	$(CC) $(CFLAGS) -o q4112 q4112.o q4112_gen.o q4112_main.o -lpthread
+	$(CC) $(CFLAGS) -o q4112 q4112.o q4112_gen.o q4112_main.o $(LIBS)
 
 q4112_hj:	q4112_hj.o q4112_gen.o q4112_main.o
-	$(CC) $(CFLAGS) -o q4112_hj q4112_hj.o q4112_gen.o q4112_main.o -lpthread
+	$(CC) $(CFLAGS) -o q4112_hj q4112_hj.o q4112_gen.o q4112_main.o $(LIBS)
 
 q4112_nlj_1:	q4112_nlj_1.o q4112_gen.o q4112_main.o
-	$(CC) $(CFLAGS) -o q4112_nlj_1 q4112_nlj_1.o q4112_gen.o q4112_main.o -lpthread
+	$(CC) $(CFLAGS) -o q4112_nlj_1 q4112_nlj_1.o q4112_gen.o q4112_main.o $(LIBS)
 
 q4112_nlj:	q4112_nlj.o q4112_gen.o q4112_main.o
-	$(CC) $(CFLAGS) -o q4112_nlj q4112_nlj.o q4112_gen.o q4112_main.o -lpthread
+	$(CC) $(CFLAGS) -o q4112_nlj q4112_nlj.o q4112_gen.o q4112_main.o $(LIBS)
 
 q4112_hj_1:	q4112_hj_1.o q4112_gen.o q4112_main.o
-	$(CC) $(CFLAGS) -o q4112_hj_1 q4112_hj_1.o q4112_gen.o q4112_main.o -lpthread
+	$(CC) $(CFLAGS) -o q4112_hj_1 q4112_hj_1.o q4112_gen.o q4112_main.o $(LIBS)
 
-## Object file
-
-exp.o:	exp.c
-	$(CC) $(CFLAGS) -c exp.c
-
+## Object files
 q4112.o:	q4112.c
 	$(CC) $(CFLAGS) -c q4112.c
 
@@ -45,4 +41,4 @@ q4112_main.o:	q4112_main.c q4112.h
 	$(CC) $(CFLAGS) -c q4112_main.c
 
 clean:
-	rm -f exp q4112 q4112_hj q4112_nlj_1 q4112_nlj q4112_hj_1 q4112_main.o q4112_nlj_1.o q4112_nlj.o q4112_hj_1.o q4112_hj.o q4112.o exp.o
+	$(RM) $(SRC:.c=.o) $(SRC:.c=)
